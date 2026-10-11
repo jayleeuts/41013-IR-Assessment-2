@@ -16,3 +16,6 @@ import os
 
 # Useful variables
 from math import pi
+
+# Team robot models
+from Shuban_G import JumpShotBot, Meca500, Meca500Workspace
