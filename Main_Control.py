@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import threading
 import time
 import swift as sw
-from spatialmath.base import *
+import spatialmath.base as spb
 from spatialmath import SE3
 from spatialgeometry import Sphere, Arrow, Mesh
 from roboticstoolbox import DHLink, DHRobot, models, jtraj, trapezoidal
