@@ -5,28 +5,38 @@ from ir_support.robots.UTSMeshRobot import UTSMeshRobot
 
 
 class Doosan_Robot(UTSMeshRobot):
-    """Doosan 6-DOF Robot model ported for UTS Robotics Toolbox and Swift."""
+    """Doosan M0609 6-DOF robot for the UTS Robotics Toolbox and Swift.
+
+    DH parameters are measured from OUR CAD meshes (Doosan_Parts_Dae), not the
+    datasheet: each joint axis was found from the ring where two neighbouring
+    link meshes touch. Every DH joint axis now passes exactly through its CAD
+    joint, so the links rotate about the right place and no gaps open up.
+
+    Robot base frame = CAD origin. The base mesh's underside is 22 mm BELOW
+    that origin (BASE_FOOT), so mount the robot with base = surface * SE3.Tz(BASE_FOOT).
+    """
+
+    BASE_FOOT = 0.022          # base frame sits 22 mm above the bottom of the base mesh
 
     def __init__(self, base=None):
-        # 6 Links based on Table 6.2 DH Parameters:
         links = [
-            # Joint 1: d = 135 mm (base to shoulder axis height)
-            rtb.RevoluteDH(d=0.135, a=0.0, alpha=-pi / 2, offset=0.0, qlim=self._qlim(-360, 360)),
-            
-            # Joint 2: d=6.2mm, a=411mm, alpha=0 deg, offset=-90 deg
-            rtb.RevoluteDH(d=0.0062, a=0.411, alpha=0.0, offset=-pi / 2, qlim=self._qlim(-360, 360)),
-            
-            # Joint 3: d=0, a=0, alpha=90 deg, offset=+90 deg
-            rtb.RevoluteDH(d=0.0, a=0.0, alpha=pi / 2, offset=pi / 2, qlim=self._qlim(-360, 360)),
-            
-            # Joint 4: d=368mm, a=0, alpha=-90 deg, offset=0
-            rtb.RevoluteDH(d=0.368, a=0.0, alpha=-pi / 2, offset=0.0, qlim=self._qlim(-360, 360)),
-            
-            # Joint 5: d=0, a=0, alpha=90 deg, offset=0
-            rtb.RevoluteDH(d=0.0, a=0.0, alpha=pi / 2, offset=0.0, qlim=self._qlim(-360, 360)),
-            
-            # Joint 6: d=121mm, a=0, alpha=0 deg, offset=0
-            rtb.RevoluteDH(d=0.121, a=0.0, alpha=0.0, offset=0.0, qlim=self._qlim(-360, 360)),
+            # Joint 1: vertical. Shoulder axis (J2) is 115.6 mm above the base frame
+            rtb.RevoluteDH(d=0.1156, a=0.0, alpha=-pi / 2, offset=0.0, qlim=self._qlim(-360, 360)),
+
+            # Joint 2: shoulder. Upper arm 409.9 mm from shoulder to elbow axis
+            rtb.RevoluteDH(d=0.0, a=0.4099, alpha=0.0, offset=-pi / 2, qlim=self._qlim(-360, 360)),
+
+            # Joint 3: elbow. Forearm's S-bend puts J4 153.7 mm to the side
+            rtb.RevoluteDH(d=-0.1537, a=0.0, alpha=pi / 2, offset=pi / 2, qlim=self._qlim(-360, 360)),
+
+            # Joint 4: forearm roll. 367.1 mm up to the J5 axis
+            rtb.RevoluteDH(d=0.3671, a=0.0, alpha=-pi / 2, offset=0.0, qlim=self._qlim(-360, 360)),
+
+            # Joint 5: wrist bend. J6 axis is 144.9 mm back along J5
+            rtb.RevoluteDH(d=0.1449, a=0.0, alpha=pi / 2, offset=0.0, qlim=self._qlim(-360, 360)),
+
+            # Joint 6: flange roll. Flange face 119.4 mm above the J5 axis
+            rtb.RevoluteDH(d=0.1194, a=0.0, alpha=0.0, offset=0.0, qlim=self._qlim(-360, 360)),
         ]
 
         # Path to your exact .dae folder

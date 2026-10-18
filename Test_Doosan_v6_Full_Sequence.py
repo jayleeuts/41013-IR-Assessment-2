@@ -275,18 +275,19 @@ state["shaft_world"] = (robot.fkine(q_carry) * TOOL) * SE3.Tz(0.60) * SE3.Tx(-0.
 Update()
 
 
-print(__doc__)
-while True:
-    key = input("Press 1 = attach, 2 = straight, 3 = masse, x = quit: ").strip().lower()
-    if key == "1":
-        Attach()
-    elif key == "2":
-        Shot("straight")
-    elif key == "3":
-        Shot("masse")
-    elif key == "x":
-        print("Closing Swift.")
-        env.close()
-        break
-    else:
-        print("Unknown key.")
+import time
+
+print("Running Sequence: Attach -> Straight Shot -> Masse Shot")
+
+# 1. Attach
+Attach()
+
+# 2. Straight Shot
+Shot("straight")
+
+# 3. Masse Shot
+Shot("masse")
+
+print("Sequence complete. Closing Swift in 5 seconds...")
+time.sleep(5)
+env.close()
