@@ -1,5 +1,6 @@
 import os
 from math import pi
+import numpy as np
 import roboticstoolbox as rtb
 from ir_support.robots.UTSMeshRobot import UTSMeshRobot
 
@@ -77,5 +78,17 @@ class Meca500_Robot(UTSMeshRobot):
             name="Meca500",
             home_q=[0.0] * 6,
             base=base,
-            meshes_are_global_at_home=True,
+            meshes_are_global_at_home=False,
+            qtest_transforms=[np.eye(4)] * 7,
         )
+
+        # The CAD STL meshes were exported at joint configuration [-pi/2, -pi/2, 0, 0, 0, 0]
+        # (arm reaching along +Y instead of +X, and Link 2 horizontal instead of vertical).
+        # We recalibrate the mesh relation matrices to that CAD configuration:
+        q_cad = [-pi / 2, -pi / 2, 0.0, 0.0, 0.0, 0.0]
+        link_transforms_cad = self._get_transforms(q_cad)
+        self._relation_matrices = [
+            np.linalg.inv(link_transforms_cad[i]) @ np.eye(4)
+            for i in range(len(link_transforms_cad))
+        ]
+        self._update_3dmodel()
