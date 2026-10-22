@@ -48,6 +48,8 @@ ORANGE = 5
 ORANGE_POCKET = 1                     # orange goes down in the break (top-right corner)
 
 POCKET_CAPTURE = 0.09                 # ball centre this close to a hole -> it drops in
+POCKET_MOUTH = 0.16                   # within this of a hole the cushion is cut away ...
+POCKET_JAW = 0.035                    # ... to the pocket jaws, this far behind the cushion line
 MU_ROLL = 0.012                       # rolling resistance of the cloth (real cloth is about 0.01)
 
 # ------------------------------------BALL PHYSICS-----------------------------------------------------
@@ -60,8 +62,9 @@ BOUNCE_STOP = 0.15                    # (Shuban) stop bouncing below this upward
 class Pool_Ball(Ball_Physics):
     """Ball_Physics + jumping (Shuban's model) + pocket jaws."""
 
-    def __init__(self, centre, radius, capture=POCKET_CAPTURE, **kw):
+    def __init__(self, centre, radius, capture=POCKET_CAPTURE, jaws=False, **kw):
         super().__init__(centre, radius, **kw)
+        self.jaws = jaws               # True = cushions cut away to the pocket jaws (game physics)
         self.capture = capture
         self.floor_z = float(centre[2])
         self.vz = 0.0
@@ -107,12 +110,29 @@ class Pool_Ball(Ball_Physics):
         self._Check_Pockets()
 
     def _Cushions(self):
-        if self.homing:                                          # guided straight into its pocket
+        """Bounce off the cushions. Near a pocket the cushion is cut away to the
+        pocket's jaws (POCKET_JAW further out), so a ball heading for the pocket at
+        an angle can still run into the hole - but it can never leave the table."""
+        if self.homing or self.bounds is None:                   # guided straight into its pocket
             return
-        v_before = self.v.copy()
-        super()._Cushions()
-        if np.any(np.sign(self.v[:2]) != np.sign(v_before[:2])):
-            self.cushion_hits += 1
+        if not self.jaws:                                        # original model (trick-shot run-out)
+            v_before = self.v.copy()
+            super()._Cushions()
+            if np.any(np.sign(self.v[:2]) != np.sign(v_before[:2])):
+                self.cushion_hits += 1
+            return
+        xmin, xmax, ymin, ymax = self.bounds
+        if any(np.linalg.norm(self.pos[:2] - p) < POCKET_MOUTH for p in self.pockets):
+            xmin, xmax, ymin, ymax = xmin - POCKET_JAW, xmax + POCKET_JAW, ymin - POCKET_JAW, ymax + POCKET_JAW
+        for axis, lo, hi in ((0, xmin + self.r, xmax - self.r), (1, ymin + self.r, ymax - self.r)):
+            if self.pos[axis] < lo and self.v[axis] < 0:
+                self.pos[axis] = lo
+                self.v[axis] = -self.cushion_e * self.v[axis]
+                self.cushion_hits += 1
+            elif self.pos[axis] > hi and self.v[axis] > 0:
+                self.pos[axis] = hi
+                self.v[axis] = -self.cushion_e * self.v[axis]
+                self.cushion_hits += 1
 
     def _Land(self):
         self.pos[2] = self.floor_z
