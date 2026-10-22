@@ -1,26 +1,3 @@
-"""
-Pool_Robot_Menu - the group workcell with a menu in Swift.
-
-  1. Exhibition : Jbot (Jaylee) collects the 9 balls from the pockets into the rack,
-                  slides the rack to the foot spot and lifts it off; then the
-                  Doosan (Nicole) drives round and breaks. The balls land on the
-                  layout from the photo (orange potted), and the Doosan runs the
-                  table with the trick shots in Pool_Trick_Shots.py:
-                    jump -> yellow top-left, bank -> blue middle-right, then red,
-                    purple, green, brown, black, nine (one of them a masse).
-  2. Teach      : (coming next)
-  3. Experiment : (coming next)
-
-Click the buttons in the Swift browser tab. The status line shows what is happening.
-
-E-STOP: freezes every robot and ball immediately (stack light turns red).
-        Reset acknowledges it, then Resume continues - nothing restarts on its own.
-        After Reset you can also pick a mode to start again from a clean scene.
-
-Scene: Robot_Track_v2 with the pool table in its centre hole. Two turtlebots on
-the blue deck - Jbot's hugs the inner rim (it reaches into the table), the
-Doosan's uses the outer side of the lanes so they never meet.
-"""
 import swift
 import numpy as np
 import spatialgeometry as sg

@@ -1,7 +1,7 @@
 """
 Test_Doosan_v6_Full_Sequence - the whole pool demo in one script.
 
-Scene: Robot_Track on the floor, Pool_Table in the middle of it, Turtlebot in
+Scene: Robot_Track_v2 on the floor, Pool_Table in the middle of it, Turtlebot in
 the white channel with the Doosan on top, Cue_Holder on the flange holding
 the cue handle, two white balls on the felt.
 
@@ -23,7 +23,7 @@ from Pool_Parts import Part_Path, Part_Mesh
 from Pool_Objects import Cue_Ball, Cue_Stick
 from Pool_Motion import (Holder_Tool, Solve_IK, Cue_Pose, Stroke_Profile,
                          Punch_Stroke_Profile, Ball_Physics, Balls_Collide)
-from Pool_Scene import (CHANNEL_Y, CHANNEL_X, TABLE_Z, FELT_Z, PLAY_AREA,
+from Pool_Scene import (TRACK_NAME, TRACK_POSE, CHANNEL_Y, CHANNEL_X, TABLE_Z, FELT_Z, PLAY_AREA,
                         GROOVE_HEIGHT, Turtle_Pose, Robot_Base_On, Drive_Path)
 
 
@@ -68,7 +68,7 @@ env.launch(realtime=True)
 
 env.set_camera_pose([3.0, -2.6, 2.6], [0.0, 0.0, 0.8])
 
-track = Part_Mesh("Robot_Track", pose=SE3())
+track = Part_Mesh(TRACK_NAME, pose=TRACK_POSE)
 table = Part_Mesh("Pool_Table", pose=SE3(0, 0, TABLE_Z))
 env.add(track)
 env.add(table)

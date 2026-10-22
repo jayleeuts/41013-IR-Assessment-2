@@ -31,7 +31,7 @@ from Pool_Parts import Part_Path, Part_Mesh
 from Pool_Objects import Cue_Ball, Cue_Stick
 from Pool_Motion import (Holder_Tool, Solve_IK, Cue_Pose, Punch_Stroke_Profile,
                          Ball_Physics, Balls_Collide)
-from Pool_Scene import (CHANNEL_Y, TABLE_Z, FELT_Z, PLAY_AREA, GROOVE_HEIGHT,
+from Pool_Scene import (TRACK_NAME, TRACK_POSE, CHANNEL_Y, TABLE_Z, FELT_Z, PLAY_AREA, GROOVE_HEIGHT,
                         POCKETS, POCKET_RADIUS, POCKET_FLOOR_Z,
                         Turtle_Pose, Robot_Base_On, Drive_Path)
 
@@ -76,7 +76,7 @@ AIM_DEG = APPROACH_DEG                # cue points the way the balls should go
 env = swift.Swift()
 env.launch(realtime=True)
 
-env.add(Part_Mesh("Robot_Track", pose=SE3()))
+env.add(Part_Mesh(TRACK_NAME, pose=TRACK_POSE))
 env.add(Part_Mesh("Pool_Table", pose=SE3(0, 0, TABLE_Z)))
 
 turtle = Turtlebot3Waffle()
