@@ -1,3 +1,6 @@
+import sys
+import json
+from pathlib import Path
 import swift
 import numpy as np
 import spatialgeometry as sg
@@ -15,17 +18,21 @@ from Pool_Scene import (TRACK_NAME, TRACK_POSE, CHANNEL_Y, INNER_X, INNER_Y, RIM
                         POCKET_FLOOR_Z, Turtle_Pose, Robot_Base_On, Drive_Path)
 from Jbot_Racker import Jbot_Mobile, Ball_Rack, Rack_Slots, Tool_Down, Jbot_IK
 from Pool_Players import UR3_Player, Meca_Player
-from Meca_Jumper import Short_Stroke_Profile
+from Meca_Jumper import Short_Stroke_Profile, CARRY_Q as MECA_CARRY_Q
 from Pool_Game import GAME
 from Pool_Scene import _Loop, _Loop_S, _Loop_Point
 from Pool_Trick_Shots import (Pool_Ball, Table_Step, Break_Script, LAYOUT, ORANGE, ORANGE_POCKET,
                               POCKET_NAMES, MU_ROLL, SHOTS, Shot_Poses)
+from Pool_Station import (Station, Q_REST, Chalk_Present_Pose, Assembly_Pose, HANDLE_PIN as PIN, N_TURNS, LINE_UP,
+                          PRESENT, ASM_PRESENT)
+import test_meca500_shaft_grip as SG
+import Pool_Arm as PA
 
 
 # ------------------------------------CONSTANTS-----------------------------------------------------
 
 DT = 0.02
-SPEED_UP = 2                          # playback speed: 2 = robots AND balls move twice as fast on screen
+SPEED_UP = 5                          # playback speed: robots AND balls move this many times faster on screen
 PHYSICS_SUBSTEPS = 5                  # ball physics steps per frame (fast balls need small steps)
 JOINT_SPEED = 2.0                     # rad/s cap for joint-space moves (both robots)
 
@@ -45,7 +52,8 @@ APPROACH = 0.15
 CUE_TO_BALL = 1.4
 
 # --- Jbot (Jaylee) ---
-JBOT_SPEED = 0.5                      # turtlebot driving speed (m/s)
+JBOT_SPEED = 0.8                      # turtlebot driving speed (m/s)
+RACK_SPEED_UP = 5                          # playback speed: robots AND balls move this many times faster on screen
 TRAY_PARK = (INNER_X, 0.0, -90.0)     # Jbot fills / slides the rack from here
 RACK_START_APEX = 0.78                # rack starts near the foot cushion (apex ball x)
 FOOT_SPOT = 0.534                     # rack apex ends here (1/4 of the table from the foot)
@@ -72,7 +80,20 @@ BALL_COLOURS = {1: (1.0, 0.85, 0.0), 2: (0.0, 0.2, 0.8), 3: (0.85, 0.0, 0.0), 4:
 
 # ------------------------------------SCENE-----------------------------------------------------
 
-env = swift.Swift()
+HEADLESS = "--make-snapshots" in sys.argv          # build the time-skip snapshots without opening Swift
+
+
+class _No_Swift(swift.Swift):
+    """Stand-in for Swift when making snapshots (nothing is shown, no browser opens)."""
+    def __init__(self): pass
+    def launch(self, **kw): pass
+    def add(self, *a, **kw): pass
+    def step(self, *a, **kw): pass
+    def set_camera_pose(self, *a, **kw): pass
+    def close(self): pass
+
+
+env = _No_Swift() if HEADLESS else swift.Swift()
 env.launch(realtime=True)
 env.set_camera_pose([3.6, -4.6, 3.6], [0.4, -0.6, 0.8])
 
@@ -105,14 +126,23 @@ ur3_p.Add_To_Env(env)
 meca_p = Meca_Player(MECA_HOME)
 meca_p.Add_To_Env(env)
 
+# Shuban's service Meca500 at the head end: assembles the cue and chalks every cue (Pool_Station.py)
+station = Station()
+station.Add_To_Env(env)
+cue_state = {"shaft": None}            # None = cue assembled; otherwise the shaft's own world pose
+
 # balls: cue ball (mesh with markings) + 9 coloured object balls
 cue_ball_mesh = Cue_Ball(str(Part_Path("Cue_Ball")))
 R = cue_ball_mesh.radius
 cue_ball_mesh.Add_To_Env(env)
 ball_meshes = {0: cue_ball_mesh}
-for n, colour in BALL_COLOURS.items():
-    ball_meshes[n] = sg.Sphere(radius=R, color=[*colour, 1.0])
-    env.add(ball_meshes[n])
+for n, colour in BALL_COLOURS.items():          # Nicole's numbered balls (Pool_Parts/1Ball.dae ... 9Ball.dae)
+    try:
+        ball_meshes[n] = Cue_Ball(str(Part_Path(f"{n}Ball")))
+        ball_meshes[n].Add_To_Env(env)
+    except ValueError:                           # mesh missing - plain coloured sphere instead
+        ball_meshes[n] = sg.Sphere(radius=R, color=[*colour, 1.0])
+        env.add(ball_meshes[n])
 physics = {n: Pool_Ball([0, 0, FELT_Z + R], R, mu_roll=MU_ROLL, jaws=True, bounds=PLAY_AREA, pockets=POCKETS,
                         pocket_radius=POCKET_RADIUS, pocket_floor_z=POCKET_FLOOR_Z + R)
            for n in ball_meshes}
@@ -135,25 +165,19 @@ rack.Add_To_Env(env)
 
 control = {"state": "IDLE", "sequence": None, "mode": None, "request": None}
 
-status = swift.Label(desc="Status: starting")
-env.add(status)
+class _Text:
+    desc = ""
+
+
+status = _Text()                       # status text (the control panel shows it)
 
 
 def Set_Status(text):
+    control["text"] = text
     status.desc = f"[{control['state']}] {text}"
-    print(f"[{control['state']}] {text}")
+    if not HEADLESS:
+        print(f"[{control['state']}] {text}")
 
-
-def Press(action):
-    def callback(_):
-        control["request"] = action
-    return callback
-
-
-for action, text in [("exhibition", "1. Exhibition"), ("teach", "2. Teach"), ("experiment", "3. Experiment"),
-                     ("estop", "E-STOP"), ("reset", "RESET"), ("resume", "Resume"),
-                     ("door", "Person opens the door (sensor test)"), ("quit", "Quit")]:
-    env.add(swift.Button(Press(action), desc=text))
 
 # stack light beside the table: green = running, amber = idle / reset, red = e-stop
 LIGHT_XY = (1.98, -1.30)
@@ -265,7 +289,7 @@ env.add(person)
 
 # ------------------------------------STATE + DRAWING-----------------------------------------------------
 
-state = {"physics": False, "script": []}
+state = {"physics": False, "script": [], "fast": False}
 held = {"what": None, "T_rel": None}          # what Jbot's cup is holding
 
 
@@ -285,7 +309,9 @@ def Draw(dq=None, jq=None):
         doosan.q = dq
     T_flange = doosan.fkine(doosan.q)
     holder.T = T_flange.A
-    cue.Place(T_flange * D_TOOL)
+    T_tip = T_flange * D_TOOL
+    cue.Place(T_tip, shaft_offset=None if cue_state["shaft"] is None else T_tip.inv() * cue_state["shaft"])
+    station.Draw()
 
     jbot.Set_Base()
     if jq is not None:
@@ -309,7 +335,7 @@ def Draw(dq=None, jq=None):
         for _ in range(PHYSICS_SUBSTEPS):
             Table_Step(BALL_LIST, DT / PHYSICS_SUBSTEPS)
     for n, mesh in ball_meshes.items():
-        if n == 0:
+        if hasattr(mesh, "Place"):                               # meshes roll with the ball (numbers turn)
             mesh.Place(physics[n].pos, physics[n].R)
         else:
             mesh.T = SE3(*physics[n].pos).A
@@ -333,12 +359,12 @@ def Doosan_Joints(q_goal, steps=80):
         yield from Frame(dq=q)
 
 
-def Jbot_Joints(q_goal, steps=60):
+def Jbot_Joints(q_goal, steps=30):
     for q in rtb.jtraj(jbot.robot.q, q_goal, Steps_For(jbot.robot.q, q_goal, steps)).q:
         yield from Frame(jq=q)
 
 
-def Jbot_Line(T_from, T_to, steps=40, keep_spin=False):
+def Jbot_Line(T_from, T_to, steps=20, keep_spin=False):
     """Cup in a straight line. keep_spin=True also holds the cup's spin (used when carrying the rack)."""
     q = jbot.robot.q
     mask = (1, 1, 1, 1, 1, 1) if keep_spin else (1, 1, 1, 1, 1, 0)
@@ -354,10 +380,8 @@ def Jbot_Line(T_from, T_to, steps=40, keep_spin=False):
 
 
 def Jbot_Drive(goal):
-    for pose in Drive_Path(jbot.xyyaw, goal, DT, speed=JBOT_SPEED, loop=(INNER_X, INNER_Y),
-                           allow_reverse=True):
-        jbot.xyyaw = pose
-        yield from Frame()
+    """Jbot drives in the convoy too, so any robot parked in its way is moved on ahead of it."""
+    yield from Drive_Convoy("J", goal)
 
 
 def Doosan_Drive(goal):
@@ -372,7 +396,10 @@ def Doosan_Drive(goal):
 def Reset_Scene():
     """Balls back in the pockets, rack on the felt, robots at their start spots."""
     global d_xyyaw
-    state["physics"], state["script"] = False, []
+    state["physics"], state["script"], state["fast"] = False, [], False
+    state["score"], state["in_play"] = {"D": 0, "U": 0}, False
+    station.Reset()
+    cue_state["shaft"] = station.Shaft_Pose(SG.Q_GRIP)                 # shaft waits on its rests, Doosan has the handle
     held["what"] = None
     for pocket, stack in POCKET_STACKS.items():
         px, py = POCKETS[pocket]
@@ -387,7 +414,7 @@ def Reset_Scene():
     for p, home in ((ur3_p, UR3_HOME), (meca_p, MECA_HOME)):
         p.xyyaw = home
         p.Set_Base()
-        q_carry = p.IK(p.Carry_Tip(), p.q)
+        q_carry = MECA_CARRY_Q.copy() if p is meca_p else p.IK(p.Carry_Tip(), p.q)
         if q_carry is not None:
             p.q = q_carry
     d_base = Robot_Base_On(Turtle_Pose(*d_xyyaw))
@@ -443,11 +470,12 @@ def Slide_And_Lift_Rack():
     held.pop("balls")                                              # balls stay racked
     Set_Status("Jbot: lifting the rack off")
     T_cup = jbot.Tool_Pose()
-    yield from Jbot_Line(T_cup, SE3(0, 0, 0.08) * T_cup, steps=40, keep_spin=True)
+    yield from Jbot_Line(T_cup, SE3(0, 0, 0.08) * T_cup, steps=20, keep_spin=True)
     yield from Jbot_Joints(Jbot_Carry_q())
 
 
 def Rack_The_Balls():
+    state["fast"] = True                                       # racking plays RACK_SPEED_UP times faster
     slots = [np.array([RACK_START_APEX, 0.0]) + s[:2] for s in Rack_Slots(R)]
     where = {n: (pocket, level) for pocket, stack in POCKET_STACKS.items() for level, n in enumerate(stack)}
     for k, n in enumerate(PICK_ORDER):
@@ -457,6 +485,7 @@ def Rack_The_Balls():
         Set_Status(f"Jbot: placing ball {n} in the rack")
         yield from Drop_In_Rack(n, slots[k])
     yield from Slide_And_Lift_Rack()
+    state["fast"] = False
 
 
 # ------------------------------------HARD-CODED BREAK (balls land on the photo layout)--------------------
@@ -705,7 +734,7 @@ def Run_Out():
 # of it, out of the way - so two turtlebots never come closer than GAP along the track.
 
 GAP = 0.75                                                     # m along the track between two turtlebots
-SHOT_ROOM = 1.0                                                # m kept free either side of a robot taking a shot (its cue)
+SHOT_ROOM = 1.6                                                # m kept free either side of a robot taking a shot (its cue)
 OUT_LOOP = _Loop(*DOOSAN_LOOP)
 NAMES = {"D": "Doosan", "U": "UR3", "M": "Meca500 (Shuban)", "J": "Jbot"}
 
@@ -734,7 +763,7 @@ def On_Loop(k, s):
 
 def Drive_Robot(k, goal):
     global d_xyyaw
-    path = Drive_Path(Get_XY(k), goal, DT, speed=0.5 if k == "J" else 0.35, loop=Loop_Of(k),
+    path = Drive_Path(Get_XY(k), goal, DT, speed=0.8 if k == "J" else 0.6, loop=Loop_Of(k),
                       allow_reverse=k in ("M", "J"))
     for pose in path:
         if k == "D":
@@ -748,7 +777,7 @@ def Drive_Robot(k, goal):
         yield from Frame()
 
 
-TURTLE_GAP = 1.0                                               # turtlebot centres never closer than this
+TURTLE_GAP = 1.1                                               # turtlebot centres never closer than this
 
 
 def Set_XY(k, pose):
@@ -792,7 +821,7 @@ def _Nudge(o, direction, ds, depth=0):
 
 def Drive_Convoy(k, goal):
     """Drive robot k to goal; any robot in front of it is pushed along ahead of it."""
-    path = Drive_Path(Get_XY(k), goal, DT, speed=0.5 if k == "J" else 0.35, loop=Loop_Of(k),
+    path = Drive_Path(Get_XY(k), goal, DT, speed=0.8 if k == "J" else 0.6, loop=Loop_Of(k),
                       allow_reverse=k in ("M", "J"))
     pushed = False
     for pose in path:
@@ -844,10 +873,26 @@ class Arm:
     def q(self):
         return doosan.q if self.k == "D" else self.p.q
 
+    def Robot(self):
+        return doosan if self.k == "D" else self.p.robot
+
     def IK(self, T, seed=None):
         if self.k == "D":
             return Solve_IK(doosan, T, D_TOOL, seed, quiet=True)
         return self.p.IK(T, seed)
+
+    def Shape_IK(self, T):
+        """IK from the ONE arm shape (Pool_Arm.ARM_SHAPE): base turned to face T, the other joints
+        from the fixed elbow-up shape. Only that seed is tried, and the answer must keep the shape."""
+        if self.k == "M":
+            return self.IK(T)
+        seed = PA.Shape_Seed(self.k, self.Robot(), T)
+        if self.k == "D":
+            sol = doosan.ikine_LM(T * D_TOOL.inv(), q0=seed, joint_limits=False, slimit=1)
+        else:
+            T_local = ur3_p.robot.base.inv() * T * ur3_p.tool.inv()
+            sol = ur3_p.kin.ikine_LM(T_local, q0=seed, end=ur3_p.END, joint_limits=True, slimit=1)
+        return sol.q if sol.success and PA.Same_Shape(sol.q, seed) else None
 
     def Tip(self, q=None):
         if self.k == "D":
@@ -876,39 +921,151 @@ def Arm_Play(arm, qs):
         q_prev = q
 
 
+def In_Limits(arm, qs):
+    if arm.k != "M":
+        return True
+    lo, hi = arm.Robot().qlim
+    return all(np.all(q >= lo - 1e-6) and np.all(q <= hi + 1e-6) for q in qs)
+
+
+def RMRC_Path(arm, poses):
+    """RMRC (Pool_Arm.RMRC): joint angles that carry the cue tip through `poses`, one per frame.
+    None if the arm can't follow them closely (5 mm) or would leave its joint limits."""
+    qs, err = PA.RMRC(arm.Tip, np.array(arm.q, dtype=float), poses, DT)
+    return qs if err < 0.005 and In_Limits(arm, qs) else None
+
+
 def Arm_Line(arm, T_from, T_to, q_goal=None, steps=40):
-    """Cue tip in a straight line (speed-limited); if the arm can't follow it, a joint move to q_goal."""
-    qs, q = [], np.array(arm.q, dtype=float)
-    for s in rtb.quintic(0, 1, steps).q[1:]:
-        q_new = arm.IK(T_from.interp(T_to, s), q)
-        if q_new is None or np.max(np.abs(q_new - q)) > 0.3:
-            qs = None
-            break
-        qs.append(q_new)
-        q = q_new
-    if qs is None:
+    """Cue tip in a straight line, driven by RMRC (speed-limited). If RMRC can't follow the line,
+    or the cue would touch the arm on the way, a collision-checked joint move to q_goal."""
+    q0 = np.array(arm.q, dtype=float)
+    qs = RMRC_Path(arm, [T_from.interp(T_to, s) for s in rtb.quintic(0, 1, steps).q])
+    if qs is None or min(Cue_Free_Gap(arm, q) for q in qs) < PA.CLEARANCE:
         if q_goal is None:
-            return
-        qs = rtb.jtraj(arm.q, q_goal, 50).q
+            if qs is None:
+                return
+            qs = Clear_Joint_Path(arm, q0, np.asarray(qs[-1], dtype=float), straight=np.array(qs))
+        else:
+            qs = Clear_Joint_Path(arm, q0, np.asarray(q_goal, dtype=float),
+                                  straight=None if qs is None else np.array(qs))
     yield from Arm_Play(arm, qs)
 
 
+def Cue_Clearance(arm, q):
+    """Air gap between the arm's own cue and its own links (Pool_Arm.Cue_Gap: links as capsules
+    of their real thickness; the flange the holder bolts onto is left out)."""
+    if arm.k == "M":
+        return 1.0
+    T, L = Real_Cue(arm, q)
+    return PA.Cue_Gap(arm.k, arm.Robot(), q, T, L)
+
+
+def Real_Cue(arm, q):
+    """Tip pose and length of the part of the cue the arm really holds (before the assembly
+    the Doosan only has the handle)."""
+    T = arm.Tip(q)
+    if arm.k == "D" and cue_state["shaft"] is not None:
+        return T * SE3.Tz(-cue.shaft_length), cue.length - cue.shaft_length
+    return T, (1.127 if arm.k == "M" else cue.length)
+
+
+def Clear_Joint_Path(arm, q0, q1, steps=50, straight=None):
+    """Joint move q0 -> q1 that keeps the cue off the robot's own arm. Tries, in order: the
+    straight-line move (if given), a plain joint move, moving some joints first (base, wrist,
+    shoulder) and going through the upright carry pose - and takes the first that stays clear
+    (Pool_Arm.CLEARANCE), or else the one that stays clearest."""
+    def Two(q_mid):
+        return np.vstack([rtb.jtraj(q0, q_mid, steps // 2).q, rtb.jtraj(q_mid, q1, steps // 2).q[1:]])
+    options = [] if straight is None else [straight]
+    options.append(rtb.jtraj(q0, q1, steps).q)
+    for first in ([0], [1, 2, 3, 4, 5], [3, 4, 5], [0, 3, 4, 5], [1, 2]):
+        q_mid = q0.copy()
+        q_mid[first] = q1[first]
+        options.append(Two(q_mid))
+    q_carry = arm.IK(arm.Carry(), q0)
+    if q_carry is not None:
+        options.append(np.vstack([rtb.jtraj(q0, q_carry, steps // 2).q, rtb.jtraj(q_carry, q1, steps // 2).q[1:]]))
+    best, best_d = options[0], -1.0
+    for qs in options:
+        d = min(Cue_Free_Gap(arm, q) for q in qs)
+        if d >= PA.CLEARANCE:
+            return qs
+        if d > best_d:
+            best, best_d = qs, d
+    # no simple move stays clear: plan one (RRT-Connect in joint space, Pool_Arm.py)
+    free = lambda q: Cue_Free_Gap(arm, q) >= PA.CLEARANCE
+    if free(q0) and free(q1):
+        path = PA.RRT_Connect(q0, q1, free)
+        if path is not None:
+            dense = [q0]
+            for a, b in zip(path[:-1], path[1:]):
+                n = max(4, int(np.ceil(np.max(np.abs(b - a)) / 0.04)))
+                dense += list(rtb.jtraj(a, b, n).q[1:])
+            return np.array(dense)
+    return best
+
+
+# capsule radii of every robot's links, for the cue-vs-other-robot check
+OTHER_RADII = {"D": PA.LINK_RADII["D"] + [0.05], "U": PA.LINK_RADII["U"] + [0.03], "M": [0.09] * 6,
+               "J": [0.05] * 12, "S": [0.03] * 6}
+
+
+def Other_Capsules(arm):
+    """Links of every OTHER robot (and Shuban's station) as capsules, where they are now."""
+    out = []
+    for k, rob in (("D", doosan), ("U", ur3_p.robot), ("M", meca_p.robot), ("J", jbot.robot), ("S", station.robot)):
+        if k == arm.k or (k == "S" and not avoid["station"]):
+            continue
+        try:
+            P = np.array([T.t for T in rob.fkine_all(rob.q)])
+        except Exception:
+            P = np.array([rob.base.t, rob.fkine(rob.q).t])
+        if k == "U":
+            P = P[:9]
+        radii = OTHER_RADII[k]
+        out += [(P[i], P[i + 1], radii[min(i, len(radii) - 1)]) for i in range(len(P) - 1)
+                if radii[min(i, len(radii) - 1)] > 0 and np.linalg.norm(P[i + 1] - P[i]) > 1e-6]
+    return out
+
+
+_obstacles = {"key": None, "caps": []}
+avoid = {"station": True}              # off while the Doosan's cue is being assembled in the station's hand
+
+
+def Cue_Free_Gap(arm, q):
+    """Smallest air gap from the arm's cue to its own links AND to every other robot (the
+    first 6 cm of the cue are left out - the tip is meant to touch the ball / chalk)."""
+    key = (arm.k, avoid["station"], tuple(np.round([c for k in "DUMJ" for c in Get_XY(k)[:2]], 3)),
+           tuple(np.round(doosan.q, 3)), tuple(np.round(ur3_p.q, 3)), tuple(np.round(meca_p.q, 3)),
+           tuple(np.round(jbot.robot.q, 3)), tuple(np.round(station.robot.q, 3)))
+    if _obstacles["key"] != key:
+        _obstacles["key"], _obstacles["caps"] = key, Other_Capsules(arm)
+    T, L = Real_Cue(arm, q)
+    a, b = T.t, (T * SE3.Tz(-L)).t
+    a = a + 0.06 * (b - a) / np.linalg.norm(b - a)
+    gap = Cue_Clearance(arm, q)
+    for p1, p2, r in _obstacles["caps"]:
+        gap = min(gap, PA.Seg_Dist(a, b, p1, p2) - r - PA.CUE_RADIUS)
+    return gap
+
+
 def Arm_Lift(arm, T, q_seed):
-    """Highest lift (up to LIFT) the arm can rise straight up from cue pose T without flipping."""
+    """Highest lift (up to LIFT) the cue can rise straight up from pose T (by RMRC) without
+    the cue touching the arm."""
     for lift in (LIFT, 0.10, 0.05):
-        q, ok = np.array(q_seed, dtype=float), True
-        for s in np.linspace(0, 1, 10)[1:]:
-            q_new = arm.IK(SE3(0, 0, lift * s) * T, q)
-            if q_new is None or np.max(np.abs(q_new - q)) > 0.3:
-                ok = False
-                break
-            q = q_new
-        if ok:
-            return lift, q
+        qs, err = PA.RMRC(arm.Tip, np.array(q_seed, dtype=float), [SE3(0, 0, lift * s) * T for s in np.linspace(0, 1, 12)], DT)
+        if err < 0.003 and In_Limits(arm, qs) and min(Cue_Clearance(arm, q) for q in qs) >= PA.CLEARANCE:
+            return lift, qs[-1]
     return 0.0, np.array(q_seed, dtype=float)
 
 
 def Game_Shot(k, shot):
+    """One shot, done the same way every time:
+       1. one joint move from carrying the cue upright to just above the shot line, in the arm's
+          one shape (collision-checked joint path);
+       2. RMRC straight down onto the line, then RMRC along it to the ball;
+       3. the stroke - RMRC along the cue's own axis;
+       4. RMRC back and up, then one joint move back to carrying the cue."""
     arm = Arm(k)
     layout = shot["layout"]
     ball = np.array([*layout[0], FELT_Z + R])
@@ -917,15 +1074,17 @@ def Game_Shot(k, shot):
     approach = 0.08 if steep else APPROACH
     T_ready = T_address * SE3.Tz(-approach)
     q_carry = np.array(arm.q, dtype=float)
-    q_ready = arm.IK(T_ready, np.array(shot["q_ready"]))
+    q_ready = arm.Shape_IK(T_ready)
+    if q_ready is None:
+        q_ready = arm.IK(T_ready, np.array(shot["q_ready"]))
     if q_ready is None:
         Set_Status(f"{NAMES[k]} can't reach this shot - skipping it")
         return
     lift, q_above = Arm_Lift(arm, T_ready, q_ready)
     T_above = SE3(0, 0, lift) * T_ready
-    yield from Arm_Line(arm, arm.Tip(), T_above, q_above)                  # carry -> above the shot
-    yield from Arm_Line(arm, arm.Tip(), T_ready, q_ready)
-    yield from Arm_Line(arm, T_ready, T_address)
+    yield from Arm_Play(arm, Clear_Joint_Path(arm, q_carry, q_above))         # carry -> above the shot
+    yield from Arm_Line(arm, T_above, T_ready, q_ready)                         # RMRC down onto the line
+    yield from Arm_Line(arm, T_ready, T_address)                                # RMRC along it
     if k == "M":                                                       # Shuban's short jump / masse stroke
         profile = np.array(Short_Stroke_Profile(DT, contact_s=-ADDRESS_GAP, tip_speed=shot["speed"],
                                                 follow=0.015, backswing=0.05))
@@ -933,16 +1092,18 @@ def Game_Shot(k, shot):
         profile = Punch_Stroke_Profile(DT, contact_s=-ADDRESS_GAP, tip_speed=shot["speed"],
                                        back=0.20 if k == "D" else 0.15, follow=0.03)
     hit_at = int(np.argmax(profile <= -ADDRESS_GAP + 1e-9))
-    qs, q = [], np.array(arm.q, dtype=float)
-    for s in profile:
-        q_new = arm.IK(T_address * SE3.Tz(-s), q)
-        q = q if q_new is None else q_new
-        qs.append(q)
-    q_prev = np.array(arm.q, dtype=float)
+    T_start = arm.Tip()
+    qs = RMRC_Path(arm, [T_start] + [T_address * SE3.Tz(-s) for s in profile])     # the stroke, by RMRC
+    if qs is None:                                                     # (fallback: IK at every sample)
+        qs, q = [], np.array(arm.q, dtype=float)
+        for s in profile:
+            q_new = arm.IK(T_address * SE3.Tz(-s), q)
+            q = q if q_new is None else q_new
+            qs.append(q)
     for i, q in enumerate(qs):
         if i == hit_at:
-            # the ball gets the planned cue speed. (The Meca's stroke is played back within its
-            # joint-speed limits, so on screen its cue moves slower than the speed the ball gets.)
+            # the ball gets the planned cue speed. (Strokes are played back within the joints'
+            # speed limits, so on screen a fast stroke's cue moves slower than the ball is hit.)
             physics[0].Hit(CUE_TO_BALL * shot["speed"] * d, contact)
         yield from Arm_Play(arm, [q])
     T_now = arm.Tip()
@@ -950,33 +1111,306 @@ def Game_Shot(k, shot):
     yield from Arm_Line(arm, T_now, T_back)
     lift, _ = Arm_Lift(arm, T_back, arm.q)
     yield from Arm_Line(arm, T_back, SE3(0, 0, lift) * T_back)
+    yield from Arm_Play(arm, Clear_Joint_Path(arm, np.array(arm.q, dtype=float), q_carry))   # back to carrying
+
+
+def Station_Play(qs, shaft=False):
+    """Shuban's station Meca500 follows a list of joint angles (the shaft follows it if it holds it)."""
+    for q in qs:
+        station.robot.q = q
+        if shaft:
+            cue_state["shaft"] = station.Shaft_Pose(q)
+        yield from Frame()
+
+
+def Assemble():
+    """Shuban's assembly: his Meca500 lifts the shaft off its rests and holds it level
+    (test_meca500_shaft_grip), the Doosan brings the handle in along the same line and the
+    shaft screws on (DoosanAssemblyRightPosition: HANDLE_PIN, N_TURNS, LINE_UP_HEIGHT)."""
+    arm = Arm("D")
+    avoid["station"] = False
+    spot, roll, q_seeds = ASM_PRESENT
+    Set_Status("Assembly: Doosan drives to Shuban's station with the handle")
+    yield from Drive_Convoy("D", tuple(spot))
+    Set_Status("Assembly: Shuban's Meca500 picks up the shaft")
+    reach, lift = station.Pick_Shaft_Path()
+    yield from Station_Play(reach)
+    station.holding = "shaft"
+    yield from Station_Play(lift, shaft=True)
+    Set_Status("Assembly: Doosan lines the handle up with the shaft")
+    q_carry = np.array(arm.q, dtype=float)
+    T_line, T_pin = Assembly_Pose(LINE_UP + PIN, roll), Assembly_Pose(PIN, roll)
+    q_line = arm.IK(T_line, np.array(q_seeds[2]))
+    T_above = SE3(0, 0, 0.12) * T_line
+    yield from Arm_Line(arm, arm.Tip(), T_above, arm.IK(T_above, q_line))
+    yield from Arm_Line(arm, T_above, T_line, q_line)
+    Set_Status("Assembly: sliding the handle onto the shaft's pin")
+    yield from Arm_Line(arm, T_line, T_pin, arm.IK(T_pin, q_line))
+    Set_Status("Assembly: screwing the shaft on")
+    S = station.Shaft_Pose(SG.Q_HOLD)
+    q = np.array(arm.q, dtype=float)
+    for s in rtb.quintic(0, 1, 150).q:
+        q_new = arm.IK(Assembly_Pose(PIN * (1 - s), roll), q)
+        q = q if q_new is None else q_new
+        cue_state["shaft"] = S * SE3.Rz(N_TURNS * 2 * pi * s)
+        yield from arm.Frame(q)
+    cue_state["shaft"] = None                                       # one cue now - it moves with the handle
+    station.holding = None
+    for s in np.linspace(0, 1, 15):
+        station.gripper.opening = s
+        yield from Frame()
+    yield from Station_Play(rtb.jtraj(station.robot.q, station.Release_Up(), 30).q)     # hand lifts off the cue
+    Set_Status("Assembly: cue assembled - Doosan lifts it upright")
+    T_now = arm.Tip()
+    yield from Arm_Line(arm, T_now, SE3(0, 0, 0.12) * T_now)
     yield from Arm_Line(arm, arm.Tip(), arm.Carry(), q_carry)
+    yield from Station_Play(rtb.jtraj(station.robot.q, Q_REST, 80).q)
+    avoid["station"] = True
 
 
-def Play_Game():
-    """Doosan (with Shuban's Meca500 for the jump and masse) against the UR3, 9-ball."""
-    score = {"D": 0, "U": 0}
-    for k, shot in enumerate(GAME, start=1):
-        who = shot["who"]
-        what = {"break": "the break", "pot": "a pot", "miss": "a shot", "jump": "a JUMP shot", "masse": "a MASSE"}[shot["kind"]]
-        Set_Status(f"Shot {k}: {NAMES[who]} drives in for {what}")
-        goal = tuple(shot["turtle"])
-        yield from Drive_Convoy(who, goal)
-        yield from Make_Room(who, SHOT_ROOM)
-        Settle_Table(shot["layout"])
-        state["physics"] = True
-        Set_Status(f"Shot {k}: {NAMES[who]} - {what}")
-        yield from Game_Shot(who, shot)
-        while any(p.Moving() for p in BALL_LIST):
-            yield from Frame()
-        potted = [n for n in shot["pots"] if physics[n].potted is not None]
-        side = "U" if who == "U" else "D"
-        score[side] += len(potted)
-        Set_Status(f"Shot {k}: {NAMES[who]} " + (f"POTS {potted}" if potted else "no pot")
-                   + f"   (Doosan team {score['D']} - UR3 {score['U']})")
-        for _ in range(30):
-            yield from Frame()
-    Set_Status(f"9 is down - the DOOSAN team wins!   (Doosan team {score['D']} - UR3 {score['U']})")
+CHALK_ROOM = 1.6                       # the cue lies along the rim while it is chalked - keep the others well clear
+
+
+def Chalk_Cue(k):
+    """Shuban's chalking (Test_Meca500_v1_Chalk): robot k holds its cue tip still at the
+    station and his Meca500 chalks it."""
+    arm = Arm(k)
+    spot, roll, q_seed = PRESENT[k]
+    Set_Status(f"Chalk: {NAMES[k]} drives to Shuban's chalking station")
+    yield from Drive_Convoy(k, tuple(spot))
+    yield from Make_Room(k, CHALK_ROOM)
+    q_carry = np.array(arm.q, dtype=float)
+    if roll is None:                                                 # joints given (Meca500)
+        q_p = np.array(q_seed)
+        T_p = arm.Tip(q_p)
+    else:
+        T_p = Chalk_Present_Pose(roll)
+        q_p = arm.IK(T_p, np.array(q_seed))
+    T_back = T_p * SE3.Tz(-0.10)                                     # 10 cm back along the cue
+    T_up = SE3(0, 0, 0.10) * T_back
+    # the way out (tip -> back -> up) worked out by RMRC from the presenting pose, so the way in
+    # is the same path played backwards - always the same arm shape, nothing to guess
+    qs_back, _ = PA.RMRC(arm.Tip, q_p, [T_p.interp(T_back, s) for s in rtb.quintic(0, 1, 30).q], DT)
+    qs_up, _ = PA.RMRC(arm.Tip, qs_back[-1], [T_back.interp(T_up, s) for s in rtb.quintic(0, 1, 30).q], DT)
+    yield from Arm_Play(arm, Clear_Joint_Path(arm, q_carry, qs_up[-1]))      # carry -> above the station
+    yield from Arm_Play(arm, qs_up[::-1][1:] + [qs_back[-1]])
+    yield from Arm_Play(arm, qs_back[::-1][1:] + [q_p])
+    Set_Status(f"Chalk: Shuban's Meca500 chalks the cue tip of the {NAMES[k]}")
+    for q, opening, hold in station.Chalk_Path():
+        station.robot.q = q
+        if opening is not None:
+            station.gripper.opening = opening
+        if hold and station.holding != "chalk":
+            station.holding = "chalk"
+        elif not hold and station.holding == "chalk":
+            station.holding, station.T_chalk = None, station.T_chalk_home      # chalk back on its stand
+        yield from Frame()
+    yield from Arm_Play(arm, qs_back)
+    yield from Arm_Play(arm, qs_up)
+    yield from Arm_Play(arm, Clear_Joint_Path(arm, np.array(arm.q, dtype=float), q_carry))   # back to carrying
+
+
+def Game_Shot_Step(i):
+    """Shot i of the planned game (Pool_Game.GAME)."""
+    shot = GAME[i]
+    who = shot["who"]
+    what = {"break": "the break", "pot": "a pot", "miss": "a shot", "jump": "a JUMP shot", "masse": "a MASSE"}[shot["kind"]]
+    Set_Status(f"{NAMES[who]} drives in for {what}")
+    yield from Drive_Convoy(who, tuple(shot["turtle"]))
+    yield from Make_Room(who, SHOT_ROOM)
+    Settle_Table(shot["layout"])
+    state["physics"], state["in_play"] = True, True
+    Set_Status(f"{NAMES[who]} - {what}")
+    yield from Game_Shot(who, shot)
+    while any(p.Moving() for p in BALL_LIST):
+        yield from Frame()
+    potted = [n for n in shot["pots"] if physics[n].potted is not None]
+    side = "U" if who == "U" else "D"
+    state["score"][side] += len(potted)
+    sc = state["score"]
+    Set_Status(f"{NAMES[who]} " + (f"POTS {potted}" if potted else "no pot")
+               + f"   (Doosan team {sc['D']} - UR3 {sc['U']})")
+    for _ in range(30):
+        yield from Frame()
+    if i == len(GAME) - 1:
+        Set_Status(f"9 is down - the DOOSAN team wins!   (Doosan team {sc['D']} - UR3 {sc['U']})")
+
+
+def Shot_Name(i, shot):
+    who = {"D": "Doosan", "U": "UR3", "M": "Meca500"}[shot["who"]]
+    if shot["kind"] == "break":
+        return "Break"
+    kind = {"pot": "pots " + ", ".join(str(n) for n in shot["pots"]), "miss": "misses",
+            "jump": "JUMP shot", "masse": "MASSE"}[shot["kind"]]
+    if shot["kind"] in ("jump", "masse") and shot["pots"]:
+        kind += " - pots " + ", ".join(str(n) for n in shot["pots"])
+    return f"Shot {i + 1}: {who} {kind}"
+
+
+def Build_Steps():
+    """The whole exhibition as a numbered list of steps. Chalk before the break and every
+    time the player changes."""
+    steps = [("Assembly", Assemble), ("Rack", Rack_The_Balls)]
+    previous = None
+    for i, shot in enumerate(GAME):
+        if shot["who"] != previous:
+            steps.append((f"Chalk - {NAMES[shot['who']]}", lambda k=shot["who"]: Chalk_Cue(k)))
+        steps.append((Shot_Name(i, shot), lambda i=i: Game_Shot_Step(i)))
+        previous = shot["who"]
+    return steps
+
+
+STEPS = Build_Steps()
+STEP_NAMES = [name for name, _ in STEPS]
+# which step pots each ball (the GUI's ball buttons jump straight to it)
+BALL_STEP = {n: STEP_NAMES.index(Shot_Name(i, shot)) for i, shot in enumerate(GAME) for n in shot["pots"]}
+state["step"] = None
+
+
+def Step_Name(i=None):
+    i = state["step"] if i is None else i
+    return "-" if i is None else f"{i + 1}. {STEP_NAMES[i]}"
+
+
+def Run_From(first):
+    """Run the exhibition from step `first` to the end."""
+    for i in range(first, len(STEPS)):
+        state["step"] = i
+        Set_Status(Step_Name(i))
+        yield from Snapshot_Hook(i)
+        yield from STEPS[i][1]()
+    state["step"] = None
+
+
+def Potted_Balls():
+    """Object balls pocketed in this game so far (for the ticks on the control panel)."""
+    if not state.get("in_play"):
+        return set()
+    return {n for n in range(1, 10) if physics[n].potted is not None}
+
+
+# ------------------------------------TIME-SKIP: SNAPSHOTS-----------------------------------------------------
+#
+# A snapshot is everything that moves, saved at the very start of a step: every turtlebot and
+# arm, every ball, the rack, the chalk, the shaft. They are made once with
+#     python Pool_Robot_Menu.py --make-snapshots
+# (it plays the whole exhibition without drawing it) and saved in Pool_Snapshots.json. Jumping to
+# a step puts everything back exactly as it was at that moment and carries on from there.
+
+SNAPSHOT_FILE = Path(__file__).resolve().parent / "Pool_Snapshots.json"
+snapshots = {}
+
+
+def _Plain(v):
+    if isinstance(v, np.ndarray):
+        return {"nd": v.tolist()}
+    if isinstance(v, SE3):
+        return {"se3": v.A.tolist()}
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, (list, tuple)):
+        return [_Plain(x) for x in v]
+    if isinstance(v, dict):
+        return {"dict": [[_Plain(k), _Plain(x)] for k, x in v.items()]}
+    return v
+
+
+def _Back(v):
+    if isinstance(v, dict) and "nd" in v:
+        return np.array(v["nd"], dtype=float)
+    if isinstance(v, dict) and "se3" in v:
+        return SE3(np.array(v["se3"]), check=False)
+    if isinstance(v, dict) and "dict" in v:
+        return {_Back(k): _Back(x) for k, x in v["dict"]}
+    if isinstance(v, list):
+        return [_Back(x) for x in v]
+    return v
+
+
+BALL_KEEP = ("pos", "v", "w", "R", "_vz", "potted", "floor_z", "vz", "airborne", "cushion_hits", "guide", "homing")
+
+
+def Take_Snapshot():
+    return _Plain({
+        "d": [list(d_xyyaw), doosan.q], "u": [list(ur3_p.xyyaw), ur3_p.q], "m": [list(meca_p.xyyaw), meca_p.q],
+        "j": [list(jbot.xyyaw), jbot.robot.q],
+        "station": [station.robot.q, station.holding, station.gripper.opening, station.T_chalk],
+        "shaft": cue_state["shaft"], "rack": rack.T,
+        "held": [held.get("what"), held.get("T_rel"), held.get("balls")],
+        "balls": {n: {k: getattr(p, k) for k in BALL_KEEP if hasattr(p, k)} for n, p in physics.items()},
+        "state": {k: state[k] for k in ("physics", "fast", "score", "in_play")}})
+
+
+def Restore_Snapshot(i):
+    """Put the whole cell back to the start of step i. False if there is no snapshot for it."""
+    global d_xyyaw
+    if not snapshots:
+        Load_Snapshots()
+    if i not in snapshots:
+        if i == 0:                                          # start of the show = a fresh scene anyway
+            Reset_Scene()
+            return True
+        return False
+    S = _Back(snapshots[i])
+    d_xyyaw = tuple(S["d"][0])
+    doosan.q = S["d"][1]
+    for p, key in ((ur3_p, "u"), (meca_p, "m")):
+        p.xyyaw = tuple(S[key][0])
+        p.Set_Base()
+        p.q = S[key][1]
+    jbot.xyyaw = tuple(S["j"][0])
+    jbot.Set_Base()
+    jbot.robot.q = S["j"][1]
+    station.robot.q, station.holding, station.gripper.opening, station.T_chalk = S["station"]
+    cue_state["shaft"] = S["shaft"]
+    rack.Place(S["rack"])
+    held.clear()
+    held["what"], held["T_rel"] = S["held"][0], S["held"][1]
+    if S["held"][2] is not None:
+        held["balls"] = S["held"][2]
+    for n, attrs in S["balls"].items():
+        for k, v in attrs.items():
+            setattr(physics[n], k, v)
+    state.update(S["state"])
+    state["script"] = []
+    door_state["script"], door_state["angle"] = [], 0.0
+    avoid["station"] = True
+    Draw()
+    return True
+
+
+def Load_Snapshots():
+    try:
+        data = json.load(open(SNAPSHOT_FILE))
+        if data.get("steps") == STEP_NAMES:
+            snapshots.update({int(k): v for k, v in data["snaps"].items()})
+        else:
+            print("Pool_Snapshots.json is for a different sequence - make it again with --make-snapshots")
+    except (FileNotFoundError, ValueError):
+        pass
+
+
+def Snapshot_Hook(i):
+    """While making snapshots: save one at the start of each step."""
+    if HEADLESS:
+        snapshots[i] = Take_Snapshot()
+    return
+    yield
+
+
+def Make_Snapshots():
+    import time
+    t0 = time.time()
+    Reset_Scene()
+    frames = 0
+    for _ in Run_From(0):
+        frames += 1
+    tmp = SNAPSHOT_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump({"steps": STEP_NAMES, "snaps": {str(k): v for k, v in snapshots.items()}}, f)
+    tmp.replace(SNAPSHOT_FILE)
+    print(f"saved {len(snapshots)} snapshots ({frames} frames, {time.time() - t0:.0f} s) -> {SNAPSHOT_FILE.name}")
+    print("final score", state["score"], "potted", sorted(Potted_Balls()))
 
 
 # ------------------------------------MODES-----------------------------------------------------
@@ -985,8 +1419,7 @@ def Exhibition():
     Set_Status("Exhibition: resetting the table")
     Reset_Scene()
     yield
-    yield from Rack_The_Balls()
-    yield from Play_Game()
+    yield from Run_From(0)
 
 
 def Teach():
@@ -1037,6 +1470,22 @@ def Handle_Request(req):
             control["sequence"] = MODES[req]()
             door_state["t"], door_state["demo_done"] = 0.0, False
             Set_Status(f"starting {req}")
+    elif isinstance(req, tuple) and req[0] == "goto":            # time-skip
+        i = req[1]
+        if st in ("ESTOPPED", "DOOR_OPEN"):
+            Set_Status("Can't skip while the cell is stopped")
+        elif not Restore_Snapshot(i):
+            Set_Status("No snapshots yet - run:  python Pool_Robot_Menu.py --make-snapshots")
+        else:
+            control["state"], control["mode"] = "RUNNING", "exhibition"
+            control["sequence"] = Run_From(i)
+            state["step"] = i
+            Set_Status(Step_Name(i))
+            door_state["t"], door_state["demo_done"] = 0.0, i > 0          # the door demo only on a full run
+    elif req == "pause":                                         # disarmed from the control panel
+        if st == "RUNNING":
+            control["state"] = "RESET"
+            Set_Status(f"paused - {Step_Name()}")
     elif req == "door":
         if not door_state["script"]:
             door_state["script"] = Door_Visit()
@@ -1048,16 +1497,19 @@ def Handle_Request(req):
 
 
 Reset_Scene()
+if not HEADLESS:
+    Load_Snapshots()
 control["state"] = "IDLE"
 Set_Status("ready - click 1. Exhibition, 2. Teach or 3. Experiment")
 
-running = True
-while running:
+
+def Step_Once():
+    """One screen update: button requests, the door interlock, then (only while RUNNING) the
+    next SPEED_UP frames of whatever is running. Returns False when the program should end.
+    The tkinter control panel (GUI_Pool_Robot_v4.py) calls this every screen update."""
     req, control["request"] = control["request"], None
-    if req is not None:
-        running = Handle_Request(req)
-        if not running:
-            break
+    if req is not None and not Handle_Request(req):
+        return False
     # door sensor interlock: pause everything while the door is open, carry on when it shuts
     Door_Step()
     door_open = door_state["angle"] > DOOR_SWITCH_DEG
@@ -1066,7 +1518,7 @@ while running:
         Set_Status("DOOR OPEN - door sensor tripped, all robots paused until the door is shut")
     elif control["state"] == "DOOR_OPEN" and not door_open:
         control["state"] = "RUNNING"
-        Set_Status(f"door shut - resuming {control['mode']}")
+        Set_Status(f"door shut - resuming {Step_Name()}")
     if control["state"] == "RUNNING" and control["mode"] == "exhibition" and not door_state["demo_done"]:
         door_state["t"] += DT                                  # the person turns up a few seconds in
         if door_state["t"] >= DOOR_DEMO_AT:
@@ -1074,11 +1526,20 @@ while running:
             door_state["script"] = Door_Visit()
     if control["state"] == "RUNNING" and control["sequence"] is not None:
         try:
-            for _ in range(SPEED_UP):                      # advance the sequence SPEED_UP frames per screen update
+            for _ in range(SPEED_UP * (RACK_SPEED_UP if state.get("fast") else 1)):   # frames per screen update
                 next(control["sequence"])
         except StopIteration:
             control["sequence"] = None
             control["state"] = "IDLE"
             Set_Status(f"{control['mode']} finished - pick a mode")
     Set_Light(LIGHT_FOR[control["state"]])
-    env.step(DT)
+    return True
+
+
+if __name__ == "__main__":
+    if HEADLESS:
+        Make_Snapshots()
+    else:                                               # the pop-up control panel (GUI_Pool_Robot_v4.py)
+        import runpy
+        sys.modules["Pool_Robot_Menu"] = sys.modules["__main__"]   # the panel uses THIS running cell
+        runpy.run_path(str(Path(__file__).resolve().parent / "GUI_Pool_Robot_v4.py"), run_name="__main__")
