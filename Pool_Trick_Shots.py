@@ -5,7 +5,7 @@ Pool_Trick_Shots.py - the trick-shot run-out after the break (used by Pool_Robot
                    photo you sent (orange already potted).
   * Pool_Ball    : ball physics for the run-out. Same as Ball_Physics (slide,
                    roll, spin, cushions) plus:
-                     - flying / bouncing for the JUMP shot (Shuban's jump model
+                     - flying / bouncing for the JUMP shot (the jump model
                        from Test_Meca500_v1_Jump_Over.py),
                      - pocket jaws: a ball whose centre gets within POCKET_CAPTURE
                        of a hole drops in (a ball running along the rail into a
@@ -54,13 +54,13 @@ MU_ROLL = 0.012                       # rolling resistance of the cloth (real cl
 
 # ------------------------------------BALL PHYSICS-----------------------------------------------------
 
-TABLE_BOUNCE = 0.5                    # (Shuban) upward speed kept on each landing
-BOUNCE_FRICTION = 0.2                 # (Shuban) cloth grip on each landing
-BOUNCE_STOP = 0.15                    # (Shuban) stop bouncing below this upward speed (m/s)
+TABLE_BOUNCE = 0.5                    # upward speed kept on each landing
+BOUNCE_FRICTION = 0.2                 # cloth grip on each landing
+BOUNCE_STOP = 0.15                    # stop bouncing below this upward speed (m/s)
 
 
 class Pool_Ball(Ball_Physics):
-    """Ball_Physics + jumping (Shuban's model) + pocket jaws."""
+    """Ball_Physics + jumping (jump model) + pocket jaws."""
 
     def __init__(self, centre, radius, capture=POCKET_CAPTURE, jaws=False, **kw):
         super().__init__(centre, radius, **kw)

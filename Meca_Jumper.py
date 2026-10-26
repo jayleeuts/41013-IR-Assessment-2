@@ -1,20 +1,20 @@
 """
-Meca_Jumper.py - Shuban's Meca500 on its own turtlebot, with his jump cue.
+Meca_Jumper.py - the Meca500 on its own turtlebot, with the jump cue.
 Used for the jump and masse shots in the game.
 
-Shuban's work is used as is:
-  * meca500_robot.py              : his Meca500 model (DH + meshes)
-  * Test_Meca500_v1_Jump_Over.py  : his jump cue (Jump_Cue), gripper (Cue_Gripper),
+The Meca500 test code is used as is:
+  * meca500_robot.py              : the Meca500 model (DH + meshes)
+  * Test_Meca500_v1_Jump_Over.py  : the jump cue (Jump_Cue), gripper (Cue_Gripper),
                                     short jump/masse stroke (Short_Stroke_Profile) and
                                     cue-tip pose (Tip_Pose: gripper on the robot's side)
-  * his jump-ball physics is in Pool_Trick_Shots.Pool_Ball (same constants)
+  * the jump-ball physics is in Pool_Trick_Shots.Pool_Ball (same constants)
 
 What this file adds to use it in the workcell:
   * Size      : the real Meca500 reaches ~0.33 m - from the track it cannot reach the
                 table at all. Like Jbot, joints AND meshes are scaled together
                 (MECA_SIZE) so they always line up. The jump cue is NOT scaled.
   * Mounting  : base sits on top of its own turtlebot and moves with it.
-  * IK        : his IK with joint limits, but for any tool transform.
+  * IK        : the IK with joint limits, but for any tool transform.
 """
 import numpy as np
 from math import pi
@@ -30,23 +30,39 @@ from Pool_Scene import TURTLE_HEIGHT, Turtle_Pose
 
 # ------------------------------------SETTINGS-----------------------------------------------------
 
-MECA_SIZE = 3.0                      # scale of Shuban's Meca500 (joints AND meshes)
-GRIP_OFFSET = 0.06 * MECA_SIZE       # flange face -> cue centre line (his 0.06, scaled with the gripper)
-GRIP_FROM_TIP = 0.30                 # grip point -> cue tip (along the jump cue)
+MECA_SIZE = 2.0                      # scale of the Meca500 (joints AND meshes)
+GRIP_OFFSET = 0.06 * MECA_SIZE       # flange face -> cue centre line (0.06, scaled with the gripper)
+GRIP_FROM_TIP = 0.50                 # grip point -> cue tip (along the jump cue)
 JUMP_CUE_FILE = Path(__file__).resolve().parent / "jumpcue.stl"
-FLANGE_OUT = SE3.Rx(pi)              # (his) last DH frame's Z points back into the wrist
+FLANGE_OUT = SE3.Rx(pi)              # last DH frame's Z points back into the wrist
 TOOL = FLANGE_OUT * SE3.Tz(GRIP_OFFSET) * SE3.Ry(pi / 2) * SE3.Tz(GRIP_FROM_TIP)
+# joints for carrying the jump cue while driving (found by a damped-least-squares search: cue
+# straight up, tip about 1.3 m above the robot base, the cue kept clear of the arm and the turtlebot)
+CARRY_Q = np.array([-1.1179, -0.542, -0.5664, -2.3224, -1.2428, 2.8096])
+
+
+def Rebuild_ETS(robot):
+    """After changing DH lengths, rebuild each link's ETS. The toolbox builds it once when the link
+    is made, and ikine / jacob0 use the ETS - without this they would solve for the UNSCALED
+    robot while fkine (and the meshes) use the scaled one."""
+    for i, link in enumerate(robot.links):
+        ets = link._to_ets(link._sigma, link._theta, link.d, link.alpha, link.a, link.offset, link.isflip, link._mdh)
+        for et in ets:
+            if et.isjoint:
+                et.qlim, et.jindex = link.qlim, i
+        link._ets = ets
 
 
 class Meca500_Scaled(Meca500_Robot):
-    """Shuban's Meca500 with every length multiplied by `size` (meshes too)."""
+    """the Meca500 with every length multiplied by `size` (meshes too)."""
 
     def __init__(self, size=MECA_SIZE, base=None):
         super().__init__(base=base)
         for link in self.links:
             link.d *= size
             link.a *= size
-        q_cad = [-pi / 2, -pi / 2, 0.0, 0.0, 0.0, 0.0]          # (his) pose the meshes were exported in
+        Rebuild_ETS(self)
+        q_cad = [-pi / 2, -pi / 2, 0.0, 0.0, 0.0, 0.0]          # pose the meshes were exported in
         T_cad = self._get_transforms(q_cad)
         self._relation_matrices = [np.linalg.inv(T) for T in T_cad]
         for mesh in self.links_3d:
@@ -55,7 +71,7 @@ class Meca500_Scaled(Meca500_Robot):
 
 
 def Meca_IK(robot, T_tip, tool=TOOL, q_seed=None):
-    """(his Solve_IK) cue-tip pose -> joints, joint limits respected; None if out of reach."""
+    """(Solve_IK) cue-tip pose -> joints, joint limits respected; None if out of reach."""
     T_flange = T_tip * tool.inv()
     seeds = ([np.asarray(q_seed, dtype=float)] if q_seed is not None else []) + list(Seed_Candidates(robot, T_flange))
     for seed in seeds:
@@ -68,7 +84,7 @@ def Meca_IK(robot, T_tip, tool=TOOL, q_seed=None):
 
 
 class Meca_Mobile:
-    """Shuban's Meca500 (scaled) on a turtlebot, holding his jump cue."""
+    """the Meca500 (scaled) on a turtlebot, holding the jump cue."""
 
     def __init__(self, xyyaw):
         self.robot = Meca500_Scaled()
@@ -94,8 +110,8 @@ class Meca_Mobile:
         return Meca_IK(self.robot, T_tip, TOOL, q_seed)
 
     def Carry_Pose(self):
-        """Jump cue held upright above the turtlebot."""
-        return self.robot.base * SE3(0.0, 0.0, 0.55) * SE3.Ry(pi)
+        """Jump cue held upright above the turtlebot (tip up), arm folded in: the pose of CARRY_Q."""
+        return self.robot.fkine(CARRY_Q) * TOOL
 
     def Add_To_Env(self, env):
         self.turtle.add_to_env(env)

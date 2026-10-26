@@ -1,22 +1,22 @@
 """
-Pool_Station.py - Shuban's service Meca500 at the head end of the track.
+Pool_Station.py - the service Meca500 at the head end of the track.
 
-It does two jobs, both with Shuban's own code and numbers:
+It does two jobs, both using the Meca500 test scripts' own code and numbers:
   * ASSEMBLY  (test_meca500_shaft_grip.py + DoosanAssemblyRightPosition.py)
-      the Meca500 picks the shaft up off its rests (his Q_HOVER / Q_GRIP / Q_HOLD joint
-      configs and his shaft_pose_from_ee) and holds it level; the Doosan brings the
-      handle in along the same line, the shaft screws on (his HANDLE_PIN, N_TURNS,
+      the Meca500 picks the shaft up off its rests (Q_HOVER / Q_GRIP / Q_HOLD joint
+      configs and the shaft_pose_from_ee) and holds it level; the Doosan brings the
+      handle in along the same line, the shaft screws on (HANDLE_PIN, N_TURNS,
       LINE_UP_HEIGHT).
   * CHALKING  (Test_Meca500_v1_Chalk.py)
       before the break and before every change of player the next robot holds its cue
       tip still at CHALK_TIP; the Meca500 picks up the chalk, pushes the cup onto the tip,
-      rubs it and puts the chalk back (his Chalk_Pose, Chalk_Gripper, CHALK_TOOL, Solve_IK,
+      rubs it and puts the chalk back (Chalk_Pose, Chalk_Gripper, CHALK_TOOL, Solve_IK,
       RUB_* settings).
 
-His tests have the robot base at the origin. Here the same motions are worked out in the
-robot's own frame (exactly his numbers) and the robot is simply mounted at STATION_BASE,
-on a post just outside the outer rim, so it never stands in a lane. Only change to his
-setup: the cue lies along the rim (his cue aim turned by 90 deg, CUE_AIM below) because a
+The test scripts have the robot base at the origin. Here the same motions are worked out in the
+robot's own frame (exactly the test scripts' numbers) and the robot is simply mounted at STATION_BASE,
+on a post just outside the outer rim, so it never stands in a lane. Only change to that
+setup: the cue lies along the rim (cue aim turned by 90 deg, CUE_AIM below) because a
 cue pointing straight at the robot would reach over the table.
 """
 import numpy as np
@@ -28,22 +28,22 @@ import roboticstoolbox as rtb
 from meca500_robot import Meca500_Robot
 from Pool_Parts import Part_Path
 from Pool_Motion import Cue_Pose
-import Test_Meca500_v1_Chalk as SC                      # Shuban: chalking
-import test_meca500_shaft_grip as SG                     # Shuban: shaft grip
-import DoosanAssemblyRightPosition as SA                 # Shuban: assembly numbers
+import Test_Meca500_v1_Chalk as SC                      # chalking
+import test_meca500_shaft_grip as SG                     # shaft grip
+import DoosanAssemblyRightPosition as SA                 # assembly numbers
 
 
 # ------------------------------------WHERE THE STATION IS-----------------------------------------------------
 
 STATION_BASE = SE3(-2.225, -0.30, 0.85)                 # on a post outside the head-end rim, facing the track
 CUE_AIM = -90.0                                          # cue lies along the rim, tip towards -y
-SHAFT_DIR = np.array([0.0, -1.0, 0.0])                   # his shaft_pose_from_ee: tip 0.5 m from the grip, along the rim
+SHAFT_DIR = np.array([0.0, -1.0, 0.0])                   # the shaft_pose_from_ee: tip 0.5 m from the grip, along the rim
 
 CHALK_TIP = (STATION_BASE * SE3(*SC.TIP_XYZ)).t          # where every robot holds its cue tip to be chalked
-# resting pose between jobs: his Q_HOME turned to face away from where the cues are held
+# resting pose between jobs: the Q_HOME turned to face away from where the cues are held
 Q_REST = SG.Q_HOME.copy()
 Q_REST[0] = -pi / 2
-HOLD_EE = None                                           # filled in below (his Q_HOLD end-effector, world)
+HOLD_EE = None                                           # filled in below (Q_HOLD end-effector, world)
 
 
 def Chalk_Present_Pose(roll):
@@ -55,25 +55,25 @@ class Station:
     def __init__(self):
         self.robot = Meca500_Robot()                     # what you see (mounted at the station)
         self.robot.base = STATION_BASE
-        self.kin = Meca500_Robot()                       # same robot at the origin = his frame, for IK
+        self.kin = Meca500_Robot()                       # same robot at the origin = the frame, for IK
         self.robot.q = Q_REST.copy()
         self.gripper = SC.Chalk_Gripper(SC.GRIP_OFFSET)
         self.chalk = sg.Mesh(str(Part_Path("Chalk")))
         radial = np.array([SC.CHALK_XY[0], SC.CHALK_XY[1], 0.0])
         radial /= np.linalg.norm(radial)
         centre = np.array([SC.CHALK_XY[0], SC.CHALK_XY[1], SC.STAND_HEIGHT + SC.CHALK_SIZE / 2])
-        self.T_chalk_home = SC.Chalk_Pose(centre, [0, 0, 1], -radial)          # his frame
+        self.T_chalk_home = SC.Chalk_Pose(centre, [0, 0, 1], -radial)          # the frame
         self.T_chalk = self.T_chalk_home
         self.holding = None                                                  # None / "chalk" / "shaft"
         self.shaft_spin = 0.0
-        # posts from the floor: robot post and his chalk stand
+        # posts from the floor: robot post and the chalk stand
         h = STATION_BASE.t[2]
         sx, sy = (STATION_BASE * SE3(SC.CHALK_XY[0], SC.CHALK_XY[1], 0)).t[:2]
         self.parts = [sg.Cuboid(scale=[0.14, 0.14, h], color=[0.3, 0.3, 0.33, 1.0],
                                 pose=SE3(STATION_BASE.t[0], STATION_BASE.t[1], h / 2)),
                       sg.Cuboid(scale=[0.03, 0.03, h + SC.STAND_HEIGHT], color=[0.35, 0.2, 0.1, 1.0],
                                 pose=SE3(sx, sy, (h + SC.STAND_HEIGHT) / 2))]
-        # shaft rests on the rim (under his Q_GRIP shaft pose)
+        # shaft rests on the rim (under the Q_GRIP shaft pose)
         T_rest = self.Shaft_Pose(SG.Q_GRIP)
         for along in (0.15, 0.55):
             p = (T_rest * SE3.Tz(-along)).t
@@ -81,10 +81,12 @@ class Station:
             self.parts.append(sg.Cuboid(scale=[0.04, 0.03, hh], color=[0.35, 0.2, 0.1, 1.0],
                                         pose=SE3(p[0], p[1], 0.85 + hh / 2)))
         self._chalk_qs = None
+        self.offset = SE3()
+        self._part_T = [np.array(p.T) for p in self.parts]
 
-    # --- his helpers, in the world ---
+    # --- the helpers, in the world ---
     def Shaft_Pose(self, q):
-        """(his shaft_pose_from_ee) shaft held at the end-effector, tip 0.5 m along the rim."""
+        """(shaft_pose_from_ee) shaft held at the end-effector, tip 0.5 m along the rim."""
         ee = (STATION_BASE * self.kin.fkine(q)).t
         return Cue_Pose(ee + 0.5 * SHAFT_DIR, CUE_AIM, 0.0)
 
@@ -92,8 +94,16 @@ class Station:
         T_flange = self.robot.fkine(self.robot.q)
         self.gripper.Place(T_flange * SC.FLANGE_OUT)
         if self.holding == "chalk":
-            self.T_chalk = STATION_BASE.inv() * T_flange * SC.CHALK_TOOL
-        self.chalk.T = (STATION_BASE * self.T_chalk).A
+            self.T_chalk = (self.offset * STATION_BASE).inv() * T_flange * SC.CHALK_TOOL
+        self.chalk.T = (self.offset * STATION_BASE * self.T_chalk).A
+
+    def Hide(self, hidden):
+        """Move the whole station (robot, posts, rests, chalk) far out of sight, or back."""
+        self.offset = SE3(60.0, 0.0, 0.0) if hidden else SE3()
+        self.robot.base = self.offset * STATION_BASE
+        for part, T in zip(self.parts, self._part_T):
+            part.T = (self.offset * SE3(T, check=False)).A
+        self.Draw()
 
     def Add_To_Env(self, env):
         self.robot.add_to_env(env)
@@ -108,7 +118,7 @@ class Station:
         self.holding, self.T_chalk, self.gripper.opening = None, self.T_chalk_home, 1.0
         self.Draw()
 
-    # --- assembly (his shaft-grip test): joint paths ---
+    # --- assembly (shaft-grip test): joint paths ---
     def Pick_Shaft_Path(self):
         """Home -> hover -> grip (pause) as joint angles, then grip -> hold (shaft follows)."""
         to_hover = list(rtb.jtraj(Q_REST, SG.Q_HOVER, 80).q) + [SG.Q_HOVER] * 10
@@ -117,15 +127,15 @@ class Station:
         return to_hover + to_grip, lift
 
     def Release_Up(self, rise=0.06):
-        """After the screw-on: hand rises straight up off the cue (his Q_HOLD, then up)."""
+        """After the screw-on: hand rises straight up off the cue (Q_HOLD, then up)."""
         T_up = SE3(0, 0, rise) * self.kin.fkine(SG.Q_HOLD)
         sol = self.kin.ikine_LM(T_up, q0=SG.Q_HOLD, joint_limits=True)
         return sol.q if sol.success else SG.Q_HOLD.copy()
 
-    # --- chalking (his Test_Meca500_v1_Chalk main(), steps 1-5) ---
+    # --- chalking (Test_Meca500_v1_Chalk main(), steps 1-5) ---
     def Chalk_Path(self):
-        """Joint angles (and what the gripper holds) for one chalking, worked out once with his
-        IK in his frame - every robot holds its tip at the same spot, so it is the same every time."""
+        """Joint angles (and what the gripper holds) for one chalking, worked out once with the
+        IK in the frame - every robot holds its tip at the same spot, so it is the same every time."""
         if self._chalk_qs is not None:
             return self._chalk_qs
         robot = self.kin
@@ -208,6 +218,6 @@ PRESENT = {
     "U": ((-1.72, 0.15, 90.0), 45, [0.1789, 0.3257, 0.0766, -1.797, 0.8012, 1.3205]),
     # the Meca500's own IK cannot settle this pose (a joint sits on its limit), so it was found
     # with a damped-least-squares search on tip position + cue direction; roll None = use these joints
-    "M": ((-1.44, 0.0, 90.0), None, [1.5708, 1.5708, -1.206, 0.0, 1.796, -1.5708]),
+    "M": ((-1.44, 0.5, 90.0), None, [2.1983, 1.3733, -0.856, -0.6255, 0.6237, -0.5078]),
 }
 ASM_PRESENT = ((-1.72, -0.3, -90.0), 180, [[-2.5646, 0.4702, 1.583, 0.0, 1.0883, 0.577], [-2.598, 0.5319, 1.4844, 0.0, 1.1253, 0.5436], [-2.7136, 0.8677, 0.8949, 0.0, 1.3791, 0.428]])

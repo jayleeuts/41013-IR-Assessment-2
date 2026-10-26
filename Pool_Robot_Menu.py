@@ -36,7 +36,7 @@ SPEED_UP = 5                          # playback speed: robots AND balls move th
 PHYSICS_SUBSTEPS = 5                  # ball physics steps per frame (fast balls need small steps)
 JOINT_SPEED = 2.0                     # rad/s cap for joint-space moves (both robots)
 
-# --- Doosan (Nicole) ---
+# --- Doosan ---
 HANDLE_PIN = 0.033
 GRIP_FROM_BUTT = 0.55
 CARRY_GRIP_POINT = (0.40, 0.0, 0.65)  # cue held upright in front of the robot (robot-base frame)
@@ -51,13 +51,13 @@ ADDRESS_GAP = 0.02
 APPROACH = 0.15
 CUE_TO_BALL = 1.4
 
-# --- Jbot (Jaylee) ---
+# --- Jbot ---
 JBOT_SPEED = 0.8                      # turtlebot driving speed (m/s)
 RACK_SPEED_UP = 5                          # playback speed: robots AND balls move this many times faster on screen
 TRAY_PARK = (INNER_X, 0.0, -90.0)     # Jbot fills / slides the rack from here
-RACK_START_APEX = 0.78                # rack starts near the foot cushion (apex ball x)
+RACK_START_APEX = 0.83                # rack starts near the foot cushion (apex ball x)
 FOOT_SPOT = 0.534                     # rack apex ends here (1/4 of the table from the foot)
-CARRY_LOCAL = SE3(0.30, 0.0, 0.30) * SE3.Rx(pi)   # cup above the turtlebot, pointing down
+CARRY_LOCAL = SE3(0.25, 0.0, 0.20) * SE3.Rx(pi)   # cup above the turtlebot, pointing down
 ABOVE = RIM_TOP_Z + 0.10              # cup height when moving over a pocket
 
 # where Jbot parks for each pocket (x, y, yaw) - checked reachable.
@@ -95,7 +95,8 @@ class _No_Swift(swift.Swift):
 
 env = _No_Swift() if HEADLESS else swift.Swift()
 env.launch(realtime=True)
-env.set_camera_pose([3.6, -4.6, 3.6], [0.4, -0.6, 0.8])
+CAMERA_OVERVIEW = ([3.6, -4.6, 3.6], [0.4, -0.6, 0.8])           # the whole cell
+env.set_camera_pose(*CAMERA_OVERVIEW)
 
 env.add(Part_Mesh(TRACK_NAME, pose=TRACK_POSE))
 env.add(Part_Mesh("Pool_Table", pose=SE3(0, 0, TABLE_Z)))
@@ -118,7 +119,7 @@ D_TOOL = Holder_Tool(GROOVE_HEIGHT, cue.length - GRIP_FROM_BUTT)
 jbot = Jbot_Mobile(TRAY_PARK)
 jbot.Add_To_Env(env)
 
-# the opponents: UR3 (same holder + cue) and Shuban's Meca500 (jump cue) - both wait at the head end
+# the opponents: UR3 (same holder + cue) and the Meca500 (jump cue) - both wait at the head end
 UR3_HOME = (-1.72, -0.45, 90.0)
 MECA_HOME = (-INNER_X, 0.0, 90.0)
 ur3_p = UR3_Player(UR3_HOME)
@@ -126,7 +127,7 @@ ur3_p.Add_To_Env(env)
 meca_p = Meca_Player(MECA_HOME)
 meca_p.Add_To_Env(env)
 
-# Shuban's service Meca500 at the head end: assembles the cue and chalks every cue (Pool_Station.py)
+# the service Meca500 at the head end: assembles the cue and chalks every cue (Pool_Station.py)
 station = Station()
 station.Add_To_Env(env)
 cue_state = {"shaft": None}            # None = cue assembled; otherwise the shaft's own world pose
@@ -136,7 +137,7 @@ cue_ball_mesh = Cue_Ball(str(Part_Path("Cue_Ball")))
 R = cue_ball_mesh.radius
 cue_ball_mesh.Add_To_Env(env)
 ball_meshes = {0: cue_ball_mesh}
-for n, colour in BALL_COLOURS.items():          # Nicole's numbered balls (Pool_Parts/1Ball.dae ... 9Ball.dae)
+for n, colour in BALL_COLOURS.items():          # numbered balls (Pool_Parts/1Ball.dae ... 9Ball.dae)
     try:
         ball_meshes[n] = Cue_Ball(str(Part_Path(f"{n}Ball")))
         ball_meshes[n].Add_To_Env(env)
@@ -278,6 +279,9 @@ def Door_Step():
             Place_Person(value)
         elif kind == "d":
             door_state["angle"] = value
+        elif kind == "e":                                     # the person hits the wall e-stop
+            Handle_Request("estop")
+            Set_Status("WALL E-STOP PRESSED (outside the door) - all motion stopped. Press Reset to acknowledge.")
     Place_Door()
 
 
@@ -285,6 +289,32 @@ DOOR_SWITCH_DEG = 3.0                  # door sensor trips once the door is open
 Place_Door()
 Place_Person(PERSON_FAR)
 env.add(person)
+
+
+# ------------------------------------WALL E-STOP OUTSIDE THE DOOR-----------------------------------------------------
+# The toolbox's wall-mounted emergency stop (ir_support_extra_parts "emergencyStopWallMounted",
+# copy in Pool_Parts), on the outside of the front wall next to the door. It is the SAME e-stop
+# as the control panel's: a person can walk up and hit it ("Person presses the E-STOP by the
+# door" on the panel), and either one stops the whole cell (the stack light turns red).
+
+WALL_ESTOP_XY = (0.45, -ROOM_Y - WALL_T / 2)            # outside face of the front wall, left of the door
+WALL_ESTOP_Z = 1.30
+PERSON_AT_ESTOP = (0.45, -2.35)
+try:
+    wall_estop = Part_Mesh("emergencyStopWallMounted", pose=SE3(*WALL_ESTOP_XY, WALL_ESTOP_Z) * SE3.Rz(-pi / 2))
+except Exception:                                              # stand-in: red mushroom on a yellow box
+    wall_estop = sg.Cuboid(scale=[0.12, 0.08, 0.12], color=[1.0, 0.85, 0.0, 1.0],
+                           pose=SE3(WALL_ESTOP_XY[0], WALL_ESTOP_XY[1] - 0.04, WALL_ESTOP_Z))
+env.add(wall_estop)
+
+
+def Wall_EStop_Visit():
+    """Person walks up to the wall e-stop, hits it, then steps back."""
+    def walk(a, b, secs):
+        n = int(secs / DT)
+        return [("p", tuple(np.array(a) + (np.array(b) - np.array(a)) * k / n)) for k in range(1, n + 1)]
+    return (walk(PERSON_FAR, PERSON_AT_ESTOP, 1.8) + [("w", None)] * int(0.4 / DT) + [("e", None)]
+            + [("w", None)] * int(1.0 / DT) + walk(PERSON_AT_ESTOP, PERSON_FAR, 1.8))
 
 
 # ------------------------------------STATE + DRAWING-----------------------------------------------------
@@ -396,6 +426,7 @@ def Doosan_Drive(goal):
 def Reset_Scene():
     """Balls back in the pockets, rack on the felt, robots at their start spots."""
     global d_xyyaw
+    Teach_Unhide()
     state["physics"], state["script"], state["fast"] = False, [], False
     state["score"], state["in_play"] = {"D": 0, "U": 0}, False
     station.Reset()
@@ -723,7 +754,7 @@ def Run_Out():
     Set_Status("Run-out complete - table cleared!" if not left else f"Run-out finished - left on the table: {left}")
 
 
-# ------------------------------------THE GAME: Doosan + Shuban's Meca500 vs the UR3-----------------------------
+# ------------------------------------THE GAME: Doosan + the Meca500 vs the UR3-----------------------------
 #
 # The shots come from Pool_Game.GAME (planned offline with this exact ball physics). Every ball
 # moves by physics alone - nothing is steered. Before each shot the table is "settled" onto the
@@ -736,7 +767,7 @@ def Run_Out():
 GAP = 0.75                                                     # m along the track between two turtlebots
 SHOT_ROOM = 1.6                                                # m kept free either side of a robot taking a shot (its cue)
 OUT_LOOP = _Loop(*DOOSAN_LOOP)
-NAMES = {"D": "Doosan", "U": "UR3", "M": "Meca500 (Shuban)", "J": "Jbot"}
+NAMES = {"D": "Doosan", "U": "UR3", "M": "Meca500", "J": "Jbot"}
 
 
 def Get_XY(k):
@@ -939,7 +970,12 @@ def Arm_Line(arm, T_from, T_to, q_goal=None, steps=40):
     """Cue tip in a straight line, driven by RMRC (speed-limited). If RMRC can't follow the line,
     or the cue would touch the arm on the way, a collision-checked joint move to q_goal."""
     q0 = np.array(arm.q, dtype=float)
-    qs = RMRC_Path(arm, [T_from.interp(T_to, s) for s in rtb.quintic(0, 1, steps).q])
+    poses = [T_from.interp(T_to, s) for s in rtb.quintic(0, 1, steps).q]
+    qs = RMRC_Path(arm, poses)
+    if qs is None:                                   # RMRC can't (joint limits): IK at every step of the line
+        qs = IK_Line(arm, poses)
+    if q_goal is None and qs is None:
+        q_goal = arm.IK(T_to, q0)
     if qs is None or min(Cue_Free_Gap(arm, q) for q in qs) < PA.CLEARANCE:
         if q_goal is None:
             if qs is None:
@@ -951,11 +987,22 @@ def Arm_Line(arm, T_from, T_to, q_goal=None, steps=40):
     yield from Arm_Play(arm, qs)
 
 
+def IK_Line(arm, poses):
+    """Straight cue-tip line by IK at every step (used when RMRC would leave the joint limits).
+    None if any step has no solution or the arm would jump."""
+    qs, q = [], np.array(arm.q, dtype=float)
+    for T in poses[1:]:
+        q_new = arm.IK(T, q)
+        if q_new is None or np.max(np.abs(q_new - q)) > 0.3:
+            return None
+        qs.append(q_new)
+        q = q_new
+    return qs
+
+
 def Cue_Clearance(arm, q):
     """Air gap between the arm's own cue and its own links (Pool_Arm.Cue_Gap: links as capsules
     of their real thickness; the flange the holder bolts onto is left out)."""
-    if arm.k == "M":
-        return 1.0
     T, L = Real_Cue(arm, q)
     return PA.Cue_Gap(arm.k, arm.Robot(), q, T, L)
 
@@ -969,11 +1016,24 @@ def Real_Cue(arm, q):
     return T, (1.127 if arm.k == "M" else cue.length)
 
 
+def Nearest_Turn(arm, q0, q1):
+    """Same arm pose, but each joint that can turn all the way round (Doosan, UR3) goes the SHORT
+    way (+-180 deg) instead of nearly a full circle."""
+    q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
+    if arm.k == "M":
+        return q1
+    lo, hi = (np.full(6, -2 * pi), np.full(6, 2 * pi)) if arm.k == "D" else ur3_p.robot.qlim
+    q = q0 + (q1 - q0 + pi) % (2 * pi) - pi
+    return np.where((q >= lo) & (q <= hi), q, q1)
+
+
 def Clear_Joint_Path(arm, q0, q1, steps=50, straight=None):
     """Joint move q0 -> q1 that keeps the cue off the robot's own arm. Tries, in order: the
     straight-line move (if given), a plain joint move, moving some joints first (base, wrist,
     shoulder) and going through the upright carry pose - and takes the first that stays clear
     (Pool_Arm.CLEARANCE), or else the one that stays clearest."""
+    q1 = Nearest_Turn(arm, q0, q1)                               # never spin a joint the long way round
+
     def Two(q_mid):
         return np.vstack([rtb.jtraj(q0, q_mid, steps // 2).q, rtb.jtraj(q_mid, q1, steps // 2).q[1:]])
     options = [] if straight is None else [straight]
@@ -1005,27 +1065,68 @@ def Clear_Joint_Path(arm, q0, q1, steps=50, straight=None):
     return best
 
 
-# capsule radii of every robot's links, for the cue-vs-other-robot check
-OTHER_RADII = {"D": PA.LINK_RADII["D"] + [0.05], "U": PA.LINK_RADII["U"] + [0.03], "M": [0.09] * 6,
-               "J": [0.05] * 12, "S": [0.03] * 6}
+# ------------------------------------COLLISION MODEL (every robot, turtlebot and cue)----------------------------
+# Every link is a capsule (a tube with round ends) as thick as the real link, every turtlebot
+# body is a capsule, every cue is a 15 mm tube. One model is used for planning the arm moves and
+# for the full-run check, so what the check passes is what you see.
+
+ARM_RADII = {"D": [0.11, 0.085, 0.08, 0.07, 0.065, 0.06],                    # Doosan M0609
+             "U": [0.0, 0.065, 0.055, 0.05, 0.045, 0.045, 0.04, 0.035],        # UR3 (first 9 URDF frames)
+             "M": [0.08, 0.067, 0.06, 0.053, 0.0, 0.045],                      # Meca500 x2
+             "J": [0.092] * 12,                                                # Jbot x3.0
+             "S": [0.04] * 6}                                                  # station Meca500 (real size)
+TURTLE_RADIUS = 0.17
 
 
-def Other_Capsules(arm):
-    """Links of every OTHER robot (and Shuban's station) as capsules, where they are now."""
+def Robot_Of(k):
+    return {"D": doosan, "U": ur3_p.robot, "M": meca_p.robot, "J": jbot.robot, "S": station.robot}[k]
+
+
+def Arm_Capsules(k, q=None):
+    rob = Robot_Of(k)
+    try:
+        P = np.array([T.t for T in rob.fkine_all(rob.q if q is None else q)])
+    except Exception:
+        P = np.array([rob.base.t, rob.fkine(rob.q if q is None else q).t])
+    if k == "U":
+        P = P[:9]
+    radii = ARM_RADII[k]
+    return [(P[i], P[i + 1], radii[min(i, len(radii) - 1)]) for i in range(len(P) - 1)
+            if radii[min(i, len(radii) - 1)] > 0 and np.linalg.norm(P[i + 1] - P[i]) > 1e-6]
+
+
+def Turtle_Capsule(k):
+    tb = Turtle_Pose(*Get_XY(k))
+    return [((tb * SE3(-0.05, 0, 0.07)).t, (tb * SE3(0.05, 0, 0.07)).t, TURTLE_RADIUS)]
+
+
+def Cue_Capsule(k, q=None):
+    if k == "J":
+        return []
+    arm = Arm(k)
+    T, L = Real_Cue(arm, arm.q if q is None else q)
+    return [(T.t, (T * SE3.Tz(-L)).t, PA.CUE_RADIUS)]
+
+
+def Others(k):
+    """Everything that is NOT robot k, as capsules: other arms, turtlebots and cues (and the
+    station, unless its hand is meant to touch the cue)."""
     out = []
-    for k, rob in (("D", doosan), ("U", ur3_p.robot), ("M", meca_p.robot), ("J", jbot.robot), ("S", station.robot)):
-        if k == arm.k or (k == "S" and not avoid["station"]):
+    for o in "DUMJ":
+        if o == k:
             continue
-        try:
-            P = np.array([T.t for T in rob.fkine_all(rob.q)])
-        except Exception:
-            P = np.array([rob.base.t, rob.fkine(rob.q).t])
-        if k == "U":
-            P = P[:9]
-        radii = OTHER_RADII[k]
-        out += [(P[i], P[i + 1], radii[min(i, len(radii) - 1)]) for i in range(len(P) - 1)
-                if radii[min(i, len(radii) - 1)] > 0 and np.linalg.norm(P[i + 1] - P[i]) > 1e-6]
+        out += Arm_Capsules(o) + Turtle_Capsule(o) + Cue_Capsule(o)
+    if avoid["station"] and k != "S":
+        out += Arm_Capsules("S")
     return out
+
+
+def Caps_Gap(A, B):
+    return min((PA.Seg_Dist(a1, a2, b1, b2) - ra - rb for a1, a2, ra in A for b1, b2, rb in B), default=9.0)
+
+
+# capsule radii kept for the older helpers
+OTHER_RADII = ARM_RADII
 
 
 _obstacles = {"key": None, "caps": []}
@@ -1033,19 +1134,20 @@ avoid = {"station": True}              # off while the Doosan's cue is being ass
 
 
 def Cue_Free_Gap(arm, q):
-    """Smallest air gap from the arm's cue to its own links AND to every other robot (the
-    first 6 cm of the cue are left out - the tip is meant to touch the ball / chalk)."""
+    """Smallest air gap for arm k at joints q: its cue to its own links and turtlebot, and its
+    cue AND its links to every other robot, turtlebot and cue. (The first 6 cm of the cue are
+    left out - the tip is meant to touch the ball / chalk.)"""
     key = (arm.k, avoid["station"], tuple(np.round([c for k in "DUMJ" for c in Get_XY(k)[:2]], 3)),
            tuple(np.round(doosan.q, 3)), tuple(np.round(ur3_p.q, 3)), tuple(np.round(meca_p.q, 3)),
-           tuple(np.round(jbot.robot.q, 3)), tuple(np.round(station.robot.q, 3)))
+           tuple(np.round(jbot.robot.q, 3)), tuple(np.round(station.robot.q, 3)), cue_state["shaft"] is None)
     if _obstacles["key"] != key:
-        _obstacles["key"], _obstacles["caps"] = key, Other_Capsules(arm)
+        _obstacles["key"], _obstacles["caps"] = key, Others(arm.k)
     T, L = Real_Cue(arm, q)
     a, b = T.t, (T * SE3.Tz(-L)).t
     a = a + 0.06 * (b - a) / np.linalg.norm(b - a)
-    gap = Cue_Clearance(arm, q)
-    for p1, p2, r in _obstacles["caps"]:
-        gap = min(gap, PA.Seg_Dist(a, b, p1, p2) - r - PA.CUE_RADIUS)
+    cue_cap = [(a, b, PA.CUE_RADIUS)]
+    gap = min(Cue_Clearance(arm, q), Caps_Gap(cue_cap, Turtle_Capsule(arm.k)))
+    gap = min(gap, Caps_Gap(cue_cap + Arm_Capsules(arm.k, q), _obstacles["caps"]))
     return gap
 
 
@@ -1053,8 +1155,20 @@ def Arm_Lift(arm, T, q_seed):
     """Highest lift (up to LIFT) the cue can rise straight up from pose T (by RMRC) without
     the cue touching the arm."""
     for lift in (LIFT, 0.10, 0.05):
-        qs, err = PA.RMRC(arm.Tip, np.array(q_seed, dtype=float), [SE3(0, 0, lift * s) * T for s in np.linspace(0, 1, 12)], DT)
-        if err < 0.003 and In_Limits(arm, qs) and min(Cue_Clearance(arm, q) for q in qs) >= PA.CLEARANCE:
+        poses = [SE3(0, 0, lift * s) * T for s in np.linspace(0, 1, 12)]
+        qs, err = PA.RMRC(arm.Tip, np.array(q_seed, dtype=float), poses, DT)
+        if err >= 0.003 or not In_Limits(arm, qs):
+            qs, q = [], np.array(q_seed, dtype=float)
+            for Tp in poses[1:]:                                     # IK at each step instead
+                q_new = arm.IK(Tp, q)
+                if q_new is None or np.max(np.abs(q_new - q)) > 0.3:
+                    qs = None
+                    break
+                qs.append(q_new)
+                q = q_new
+            if qs is None:
+                continue
+        if min(Cue_Clearance(arm, q) for q in qs) >= PA.CLEARANCE:
             return lift, qs[-1]
     return 0.0, np.array(q_seed, dtype=float)
 
@@ -1074,7 +1188,7 @@ def Game_Shot(k, shot):
     approach = 0.08 if steep else APPROACH
     T_ready = T_address * SE3.Tz(-approach)
     q_carry = np.array(arm.q, dtype=float)
-    q_ready = arm.Shape_IK(T_ready)
+    q_ready = arm.IK(T_ready, np.array(shot["q_ready"])) if k == "M" else arm.Shape_IK(T_ready)
     if q_ready is None:
         q_ready = arm.IK(T_ready, np.array(shot["q_ready"]))
     if q_ready is None:
@@ -1085,7 +1199,7 @@ def Game_Shot(k, shot):
     yield from Arm_Play(arm, Clear_Joint_Path(arm, q_carry, q_above))         # carry -> above the shot
     yield from Arm_Line(arm, T_above, T_ready, q_ready)                         # RMRC down onto the line
     yield from Arm_Line(arm, T_ready, T_address)                                # RMRC along it
-    if k == "M":                                                       # Shuban's short jump / masse stroke
+    if k == "M":                                                       # short jump / masse stroke
         profile = np.array(Short_Stroke_Profile(DT, contact_s=-ADDRESS_GAP, tip_speed=shot["speed"],
                                                 follow=0.015, backswing=0.05))
     else:
@@ -1094,7 +1208,9 @@ def Game_Shot(k, shot):
     hit_at = int(np.argmax(profile <= -ADDRESS_GAP + 1e-9))
     T_start = arm.Tip()
     qs = RMRC_Path(arm, [T_start] + [T_address * SE3.Tz(-s) for s in profile])     # the stroke, by RMRC
-    if qs is None:                                                     # (fallback: IK at every sample)
+    if qs is None:                                                     # RMRC would leave the joint limits:
+        qs = IK_Line(arm, [T_start] + [T_address * SE3.Tz(-s) for s in profile])   # IK at every sample
+    if qs is None:
         qs, q = [], np.array(arm.q, dtype=float)
         for s in profile:
             q_new = arm.IK(T_address * SE3.Tz(-s), q)
@@ -1115,7 +1231,7 @@ def Game_Shot(k, shot):
 
 
 def Station_Play(qs, shaft=False):
-    """Shuban's station Meca500 follows a list of joint angles (the shaft follows it if it holds it)."""
+    """The station Meca500 follows a list of joint angles (the shaft follows it if it holds it)."""
     for q in qs:
         station.robot.q = q
         if shaft:
@@ -1124,15 +1240,15 @@ def Station_Play(qs, shaft=False):
 
 
 def Assemble():
-    """Shuban's assembly: his Meca500 lifts the shaft off its rests and holds it level
+    """Assembly: the station Meca500 lifts the shaft off its rests and holds it level
     (test_meca500_shaft_grip), the Doosan brings the handle in along the same line and the
     shaft screws on (DoosanAssemblyRightPosition: HANDLE_PIN, N_TURNS, LINE_UP_HEIGHT)."""
     arm = Arm("D")
     avoid["station"] = False
     spot, roll, q_seeds = ASM_PRESENT
-    Set_Status("Assembly: Doosan drives to Shuban's station with the handle")
+    Set_Status("Assembly: Doosan drives to the Meca station with the handle")
     yield from Drive_Convoy("D", tuple(spot))
-    Set_Status("Assembly: Shuban's Meca500 picks up the shaft")
+    Set_Status("Assembly: the station Meca picks up the shaft")
     reach, lift = station.Pick_Shaft_Path()
     yield from Station_Play(reach)
     station.holding = "shaft"
@@ -1172,11 +1288,11 @@ CHALK_ROOM = 1.6                       # the cue lies along the rim while it is 
 
 
 def Chalk_Cue(k):
-    """Shuban's chalking (Test_Meca500_v1_Chalk): robot k holds its cue tip still at the
-    station and his Meca500 chalks it."""
+    """Chalking (Test_Meca500_v1_Chalk): robot k holds its cue tip still at the
+    station and the station Meca500 chalks it."""
     arm = Arm(k)
     spot, roll, q_seed = PRESENT[k]
-    Set_Status(f"Chalk: {NAMES[k]} drives to Shuban's chalking station")
+    Set_Status(f"Chalk: {NAMES[k]} drives to the chalking station")
     yield from Drive_Convoy(k, tuple(spot))
     yield from Make_Room(k, CHALK_ROOM)
     q_carry = np.array(arm.q, dtype=float)
@@ -1195,7 +1311,7 @@ def Chalk_Cue(k):
     yield from Arm_Play(arm, Clear_Joint_Path(arm, q_carry, qs_up[-1]))      # carry -> above the station
     yield from Arm_Play(arm, qs_up[::-1][1:] + [qs_back[-1]])
     yield from Arm_Play(arm, qs_back[::-1][1:] + [q_p])
-    Set_Status(f"Chalk: Shuban's Meca500 chalks the cue tip of the {NAMES[k]}")
+    Set_Status(f"Chalk: the station Meca chalks the cue tip of the {NAMES[k]}")
     for q, opening, hold in station.Chalk_Path():
         station.robot.q = q
         if opening is not None:
@@ -1375,6 +1491,7 @@ def Restore_Snapshot(i):
     state["script"] = []
     door_state["script"], door_state["angle"] = [], 0.0
     avoid["station"] = True
+    Teach_Unhide()
     Draw()
     return True
 
@@ -1422,9 +1539,240 @@ def Exhibition():
     yield from Run_From(0)
 
 
+# ------------------------------------TEACH MODE: the UR3 and one straight shot-----------------------------
+#
+# Only the UR3, the cue ball and the 8 ball. The 8 ball sits on a straight line from the cue ball
+# into the bottom-right corner pocket. The joints are set by hand with the sliders on the control
+# panel (GUI_Pool_Robot_v4.py). Every update the panel shows:
+#   * the BEST configuration for this shot (IK of the ideal address pose, the UR3's one arm shape),
+#   * checks on the cue as it is now - aim, tilt, where on the ball it would hit, how far the
+#     tip is from the ball, whether the cue touches the arm - each with a warning and a fix
+#     ("joint 1 needs to be about -37 deg"),
+# and SHOOT plays a short rock back and a stroke straight along the cue's own axis (RMRC). The
+# ball is hit where the cue line really meets it, in the direction the cue really points, so
+# the physics follows the configuration: a bad aim misses, an off-centre hit spins, a steep cue
+# jumps, a cue that doesn't reach the ball does nothing.
+
+TEACH_POCKET = 1                                               # bottom-right corner (1.104, -0.499)
+TEACH_8 = np.array([0.857, -0.252])                           # 35 cm from the corner pocket, on its diagonal
+TEACH_GAP = 0.543                                              # cue ball this far behind the 8 ball (gap between them)
+TEACH_ELEV = 8.0                                               # ideal cue tilt (deg)
+TEACH_MAX_REACH = 0.15                                         # longest stroke - tip must start closer than this
+_u = np.array(POCKETS[TEACH_POCKET]) - TEACH_8
+_u /= np.linalg.norm(_u)
+TEACH_CUE = TEACH_8 - (TEACH_GAP + 2 * R) * _u
+TEACH_AIM = float(np.degrees(np.arctan2(_u[1], _u[0])))
+teach = {"q": None, "ideal": None, "shot": None, "speed": 0.7, "result": "", "ready": False}
+
+
+TEACH_FAR = {"D": (40.0, 0.0, 0.0), "M": (44.0, 0.0, 0.0), "J": (48.0, 0.0, 0.0)}   # out of sight
+hidden = {"teach": False}
+
+
+def Teach_Hide():
+    """Teach mode shows only the UR3 and the two balls: everything else goes far out of sight,
+    and the camera moves in close on the shot."""
+    global d_xyyaw
+    for k, far in TEACH_FAR.items():
+        Set_XY(k, far)
+    cue_state["shaft"] = None                                  # (the Doosan's cue goes with it)
+    station.Hide(True)
+    rack.Place(SE3(52.0, 0.0, 0.0))
+    for n, p in physics.items():
+        if n not in (0, 8):
+            p.Set([56.0, float(n), 0.0])
+            p.potted = 0
+    hidden["teach"] = True
+    me = np.array(ur3_p.xyyaw[:2])
+    look = np.array([(me[0] + TEACH_CUE[0]) / 2, (me[1] + TEACH_CUE[1]) / 2, 0.95])
+    side = np.array([-_u[1], _u[0], 0.0])                       # square to the shot line,
+    if side @ np.array([0.0, -1.0, 0.0]) < 0:                    # on the camera's usual (front) side
+        side = -side
+    env.set_camera_pose(list(look + 1.7 * side + np.array([0.0, 0.0, 0.85])), list(look))
+
+
+def Teach_Unhide():
+    if hidden.get("teach"):
+        station.Hide(False)
+        env.set_camera_pose(*CAMERA_OVERVIEW)
+        hidden["teach"] = False
+
+
+def Teach_Address():
+    """Ideal cue-tip pose: straight at the cue ball's centre, ADDRESS_GAP behind it, tilted TEACH_ELEV."""
+    shot = dict(aim=TEACH_AIM, elev=TEACH_ELEV, side=0.0, height=0.0, roll=PA.CUE_ROLL["U"])
+    return Shot_Poses(np.array([*TEACH_CUE, FELT_Z + R]), shot, R, ADDRESS_GAP)[2]
+
+
+def Teach_Balls():
+    for n, p in physics.items():                               # every other ball is out of sight
+        if n not in (0, 8):
+            p.Set([56.0, float(n), 0.0])
+            p.potted = 0
+    physics[0].Set([*TEACH_CUE, FELT_Z + R])
+    physics[8].Set([*TEACH_8, FELT_Z + R])
+
+
+def Teach_Setup():
+    """UR3 to the best spot behind the shot line; everything else hidden; camera in close."""
+    global d_xyyaw
+    Reset_Scene()
+    state["physics"], state["in_play"] = True, False
+    Teach_Balls()
+    arm = Arm("U")
+    T_addr = Teach_Address()
+    from Make_Arm_Plan import Spots
+    best = None
+    for spot in Spots(TEACH_CUE, _u):
+        ur3_p.xyyaw = spot
+        ur3_p.Set_Base()
+        q = arm.Shape_IK(T_addr)
+        if q is None:
+            q = arm.IK(T_addr)
+        if q is None or Cue_Clearance(arm, q) < PA.CLEARANCE:
+            continue
+        prof = Punch_Stroke_Profile(DT, contact_s=-ADDRESS_GAP, tip_speed=1.0, back=0.12, follow=0.03,
+                                    n_rocks=1, rock_amp=0.05)              # the stroke SHOOT will play must fit too
+        qs, err = PA.RMRC(arm.Tip, q, [T_addr] + [T_addr * SE3.Tz(-s) for s in prof], DT)
+        if err < 0.005 and min(Cue_Clearance(arm, x) for x in qs[::3]) >= PA.CLEARANCE:
+            best = (spot, q)
+            break
+    ur3_p.xyyaw, q_ideal = best if best else (ur3_p.xyyaw, None)
+    ur3_p.Set_Base()
+    Teach_Hide()
+    q_carry = ur3_p.IK(ur3_p.Carry_Tip(), ur3_p.q)
+    if q_carry is not None:
+        ur3_p.q = q_carry
+    teach.update(q=np.array(ur3_p.q, dtype=float), ideal=q_ideal, shot=None, result="", ready=True)
+    Draw()
+
+
+def Teach_Checks(q):
+    """[(ok, text)] for the cue as the sliders have it now, plus the joint values the arm needs."""
+    arm = Arm("U")
+    q = np.asarray(q, dtype=float)
+    T = arm.Tip(q)
+    d, tip = T.R[:, 2], T.t
+    ball = np.array([*TEACH_CUE, FELT_Z + R])
+    out = []
+    aim = np.degrees(np.arctan2(d[1], d[0]))
+    elev = np.degrees(np.arcsin(np.clip(-d[2], -1, 1)))
+    aim_err = (aim - TEACH_AIM + 180) % 360 - 180
+    rel = ball - tip
+    along = rel @ d                                            # how far ahead of the tip the ball centre is
+    offset = np.linalg.norm(rel - along * d)                   # how far the cue line passes from the centre
+    reach = along - np.sqrt(max(R ** 2 - offset ** 2, 0.0))    # tip -> ball surface along the cue
+    # suggestion: the nearest configuration that IS the ideal address pose
+    sol = ur3_p.kin.ikine_LM(ur3_p.robot.base.inv() * Teach_Address() * ur3_p.tool.inv(), q0=q, end=ur3_p.END,
+                             joint_limits=True, slimit=1)
+    q_fix = sol.q if sol.success else teach["ideal"]
+
+    def Fix(*joints):
+        if q_fix is None:
+            return ""
+        tips = [f"J{j + 1} about {np.degrees(q_fix[j]):.0f} deg (now {np.degrees(q[j]):.0f})"
+                for j in joints if abs((q_fix[j] - q[j] + pi) % (2 * pi) - pi) > np.radians(3)]
+        return ("  ->  set " + ", ".join(tips)) if tips else ""
+
+    if elev < -2:
+        out.append((False, f"Cue points UP ({-elev:.0f} deg) - the tip would pass over the ball. Tilt it down to about {TEACH_ELEV:.0f} deg." + Fix(1, 2, 3, 4)))
+    elif elev > 20:
+        out.append((False, f"Cue tilt {elev:.0f} deg is steep - the ball will jump / swerve. Keep it under 15 deg (best {TEACH_ELEV:.0f})." + Fix(1, 2, 3, 4)))
+    else:
+        out.append((True, f"Cue tilt {elev:.1f} deg (best {TEACH_ELEV:.0f}, keep 0-15)"))
+    if abs(aim_err) > 1.0:
+        out.append((False, f"Aim is {aim_err:+.1f} deg off the line to the 8 ball - it needs to be within 1 deg." + Fix(0, 5)))
+    else:
+        out.append((True, f"Aim {aim_err:+.1f} deg off the line - good"))
+    if along <= 0 or offset >= R:
+        out.append((False, f"The cue line misses the cue ball by {max(offset - R, 0) * 100:.1f} cm - nothing would be hit." + Fix(0, 1, 2)))
+    elif offset > 0.3 * R:
+        out.append((False, f"Tip would hit {offset * 1000:.0f} mm off centre - the ball will spin and drift. Keep it under {0.3 * R * 1000:.0f} mm." + Fix(1, 2, 3)))
+    else:
+        out.append((True, f"Hits {offset * 1000:.0f} mm from the centre of the cue ball - good"))
+    if along > 0 and offset < R:
+        if reach < 0:
+            out.append((False, "Tip is INSIDE the cue ball - pull the cue back." + Fix(1, 2)))
+        elif reach > TEACH_MAX_REACH:
+            out.append((False, f"Tip is {reach * 100:.0f} cm from the ball - the stroke only reaches {TEACH_MAX_REACH * 100:.0f} cm. Move it closer." + Fix(1, 2)))
+        else:
+            out.append((True, f"Tip {reach * 100:.1f} cm behind the ball (the stroke reaches {TEACH_MAX_REACH * 100:.0f} cm)"))
+    gap = Cue_Clearance(arm, q)
+    if gap < PA.CLEARANCE:
+        out.append((False, f"The cue goes through the robot's own arm ({gap * 100:.1f} cm) - change the wrist (J4-J6)." + Fix(3, 4, 5)))
+    return out, (reach, offset, along)
+
+
+def Teach_Shot():
+    """Rock back once and stroke straight along the cue's own axis (RMRC); the ball is hit where
+    the cue line actually meets it, in the direction the cue actually points."""
+    arm = Arm("U")
+    q0 = np.array(ur3_p.q, dtype=float)
+    T0 = arm.Tip(q0)
+    d = T0.R[:, 2]
+    _, (reach, offset, along) = Teach_Checks(q0)
+    hits = along > 0 and offset < R and 0 <= reach <= TEACH_MAX_REACH
+    contact_s = -reach if hits else -TEACH_MAX_REACH            # (no ball in reach: full-length stroke)
+    profile = Punch_Stroke_Profile(DT, contact_s=contact_s, tip_speed=teach["speed"], back=0.12, follow=0.03,
+                                   n_rocks=1, rock_amp=0.05)
+    poses = [T0] + [T0 * SE3.Tz(-s) for s in profile]
+    qs = RMRC_Path(arm, poses)
+    if qs is None:                                              # RMRC can't follow - IK sample by sample instead
+        qs, q = [], q0
+        for T in poses[1:]:
+            q = arm.IK(T, q)
+            if q is None:
+                teach["result"] = "The arm can't make a straight stroke from this pose (out of reach / joint limits)."
+                Set_Status("Teach: " + teach["result"])
+                return
+            qs.append(q)
+    hit_at = int(np.argmax(profile <= contact_s + 1e-9))
+    Set_Status(f"Teach: UR3 shoots at {teach['speed']:.1f} m/s")
+    for i, q in enumerate(qs):
+        if hits and i == hit_at:
+            tip = arm.Tip(np.asarray(q)).t
+            physics[0].Hit(CUE_TO_BALL * teach["speed"] * d, tip - physics[0].pos)
+        yield from Arm_Play(arm, [q])
+    yield from Arm_Play(arm, rtb.jtraj(np.array(ur3_p.q, dtype=float), q0, 40).q)
+    while any(p.Moving() for p in BALL_LIST):
+        yield from Frame()
+    if not hits:
+        teach["result"] = "Missed - the cue never touched the cue ball."
+    elif physics[0].potted is not None and physics[8].potted is not None:
+        teach["result"] = "8 ball in - but the cue ball went in too (scratch)."
+    elif physics[8].potted == TEACH_POCKET:
+        teach["result"] = "8 ball POTTED in the corner - straight shot!"
+    elif physics[8].potted is not None:
+        teach["result"] = "8 ball potted - in a different pocket than aimed."
+    elif physics[0].potted is not None:
+        teach["result"] = "Scratch - the cue ball went in."
+    else:
+        e = np.linalg.norm(physics[8].pos[:2] - np.array(POCKETS[TEACH_POCKET]))
+        teach["result"] = f"8 ball missed - it stopped {e * 100:.0f} cm from the pocket. Check the aim / hit point."
+    Set_Status("Teach: " + teach["result"])
+
+
 def Teach():
-    Set_Status("Teach mode - coming next (joint + Cartesian jogging)")
+    Set_Status("Teach mode: setting up the UR3 straight shot...")
+    Teach_Setup()
+    Set_Status("Teach mode: move the joint sliders, then SHOOT")
     yield
+    while True:
+        if teach["shot"] is not None:
+            yield from teach["shot"]
+            teach["shot"] = None
+            teach["q"] = np.array(ur3_p.q, dtype=float)
+        elif teach.pop("reset_balls", False):
+            Teach_Balls()
+            teach["result"] = ""
+            yield from Frame()
+        else:
+            yield from Teach_Hold()
+
+
+def Teach_Hold():
+    ur3_p.q = np.array(teach["q"], dtype=float)
+    yield from Frame()
 
 
 def Experiment():
@@ -1463,7 +1811,7 @@ def Handle_Request(req):
     elif req in MODES:
         if st == "ESTOPPED":
             Set_Status("E-STOP active - press Reset first.")
-        elif st in ("RUNNING", "DOOR_OPEN"):
+        elif st == "DOOR_OPEN" or (st == "RUNNING" and control["mode"] != "teach"):
             Set_Status(f"busy with {control['mode']} - press E-STOP to stop it first")
         else:                                                   # IDLE or RESET: start fresh
             control["state"], control["mode"] = "RUNNING", req
@@ -1489,6 +1837,17 @@ def Handle_Request(req):
     elif req == "door":
         if not door_state["script"]:
             door_state["script"] = Door_Visit()
+    elif req == "teach_shoot":
+        if control["mode"] == "teach" and st == "RUNNING" and teach["shot"] is None:
+            teach["shot"] = Teach_Shot()
+        else:
+            Set_Status("SHOOT works in Teach mode while the cell is ARMED")
+    elif req == "teach_reset":
+        if control["mode"] == "teach":
+            teach["reset_balls"] = True
+    elif req == "wall_estop":
+        if not door_state["script"]:
+            door_state["script"] = Wall_EStop_Visit()
     elif req == "quit":
         Set_Status("closing")
         env.close()

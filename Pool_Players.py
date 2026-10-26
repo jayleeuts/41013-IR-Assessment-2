@@ -2,9 +2,9 @@
 Pool_Players.py - the three robots that play, each on its own turtlebot, all
 driven by the SAME shot code (Pool_Game.Take_Shot).
 
-  Doosan_Player : Nicole's Doosan M0609 + Cue_Holder + assembled cue
+  Doosan_Player : Doosan M0609 + Cue_Holder + assembled cue
   UR3_Player    : UR3 from the Robotics Toolbox (rtb.models.UR3) + the same holder and cue
-  Meca_Player   : Shuban's Meca500 (Meca_Jumper.py) + his jump cue - jump / masse shots
+  Meca_Player   : the Meca500 (Meca_Jumper.py) + the jump cue - jump / masse shots
 
 Every player gives the game the same things:
     xyyaw            turtlebot pose on the track
@@ -137,7 +137,7 @@ class UR3_Player(_Holder_Player):
 
 
 class Meca_Player:
-    """Shuban's Meca500 (scaled) with his jump cue - see Meca_Jumper.py."""
+    """the Meca500 (scaled) with the jump cue - see Meca_Jumper.py."""
     VMAX = np.radians([150, 150, 180, 300, 300, 500])
 
     def __init__(self, xyyaw):

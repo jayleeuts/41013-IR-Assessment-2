@@ -70,6 +70,7 @@ def Show_Page(page):
         current_page["frame"].pack_forget()
     page.pack(fill="x")
     current_page["frame"] = page
+    window.geometry("380x880+0+0" if page is Teach_Page else "380x770+0+0")
     if page is Main_Page:
         Back_Button.pack_forget()
     else:
@@ -90,8 +91,14 @@ def On_Exhibition():
 
 
 def On_Teach():
+    if state["safety"] != "ARMED":
+        Set_Status("Can't start Teach - press ARM first")
+        return
     state["mode"] = "teach"
-    Set_Status("Teach mode - coming next")
+    teach_ui["loaded"] = False
+    Menu.control["request"] = "teach"
+    Show_Page(Teach_Page)
+    Set_Status("Teach mode: setting up the UR3...")
 
 
 def On_Controller():
@@ -104,6 +111,7 @@ Big_Button(Main_Page, "1. Exhibition", On_Exhibition).pack(pady=3)
 Big_Button(Main_Page, "2. Teach", On_Teach).pack(pady=3)
 Big_Button(Main_Page, "3. Controller", On_Controller).pack(pady=3)
 Big_Button(Main_Page, "Person opens the door (sensor test)", lambda: Menu.control.update(request="door")).pack(pady=(10, 3))
+Big_Button(Main_Page, "Person presses the E-STOP by the door", lambda: Menu.control.update(request="wall_estop")).pack(pady=3)
 
 
 # ---- sequence page: the exhibition steps ----
@@ -197,6 +205,110 @@ Draw_Rack()
 Big_Button(Sequence_Page, "Run all", Run_All).pack(pady=(6, 0))
 
 
+# ---- teach page: the UR3 and one straight shot ----
+# Sliders set the UR3's six joints directly (like the joint-slider labs). Below them: the best
+# configuration for this shot, and the checks - each warning says what is wrong and which joint
+# to move. SHOOT rocks back once and strikes along the cue; the physics uses the real cue line.
+
+SMALL = (FONT, 8)
+Teach_Page = tk.Frame(Page_Area, bg=BG)
+tk.Label(Teach_Page, text="Teach - UR3 straight shot", font=(FONT, 11, "bold"), fg=FG, bg=BG).pack()
+Slider_Box = tk.Frame(Teach_Page, bg=BG)
+Slider_Box.pack()
+
+teach_ui = {"sync": False, "tick": 0}
+Joint_Sliders = []
+
+
+def On_Slider(_=None):
+    if teach_ui["sync"] or Menu.teach["q"] is None:
+        return
+    Menu.teach["q"] = Menu.np.radians([s.get() for s in Joint_Sliders])
+    Menu.teach["result"] = ""                                    # a new configuration - old result no longer applies
+
+
+for j in range(6):
+    tk.Label(Slider_Box, text=f"J{j + 1}", font=SMALL, fg=FG, bg=BG).grid(row=j, column=0, sticky="se", padx=(0, 4))
+    s = tk.Scale(Slider_Box, from_=-180, to=180, resolution=0.1, orient="horizontal", length=250, width=10,
+                 sliderlength=16, font=SMALL, command=On_Slider, bg=BG, fg=FG, troughcolor="#3a3f4b",
+                 highlightthickness=0)
+    s.grid(row=j, column=1)
+    Joint_Sliders.append(s)
+tk.Label(Slider_Box, text="m/s", font=SMALL, fg=FG, bg=BG).grid(row=6, column=0, sticky="se", padx=(0, 4))
+Speed_Slider = tk.Scale(Slider_Box, from_=0.3, to=1.5, resolution=0.1, orient="horizontal", length=250, width=10,
+                        sliderlength=16, font=SMALL, command=lambda v: Menu.teach.update(speed=float(v)), bg=BG,
+                        fg=FG, troughcolor="#3a3f4b", highlightthickness=0)
+Speed_Slider.set(0.7)
+Speed_Slider.grid(row=6, column=1)
+
+
+def Set_Sliders(q):
+    teach_ui["sync"] = True
+    for s, v in zip(Joint_Sliders, Menu.np.degrees(q)):
+        s.set(round((v + 180) % 360 - 180, 1))
+    teach_ui["sync"] = False
+    On_Slider()
+
+
+def Use_Example():
+    if Menu.teach["ideal"] is not None:
+        Set_Sliders(Menu.teach["ideal"])
+        Menu.teach["q"] = Menu.np.array(Menu.teach["ideal"], dtype=float)      # exact, not rounded to the sliders
+
+
+def Shoot():
+    if state["safety"] != "ARMED":
+        Set_Status("Press ARM first")
+        return
+    Menu.teach["result"] = ""
+    Menu.control["request"] = "teach_shoot"
+
+
+Button_Row = tk.Frame(Teach_Page, bg=BG)
+Button_Row.pack(pady=3)
+tk.Button(Button_Row, text="SHOOT", width=8, command=Shoot, font=(FONT, 10, "bold"), bg="#1f6f3a", fg="white",
+          activebackground="#2e8f4e", relief="flat").pack(side="left", padx=2)
+tk.Button(Button_Row, text="Use example", width=10, command=Use_Example, font=SMALL, bg="#3a3f4b", fg="white",
+          relief="flat").pack(side="left", padx=2)
+tk.Button(Button_Row, text="Reset balls", width=9, command=lambda: Menu.control.update(request="teach_reset"),
+          font=SMALL, bg="#3a3f4b", fg="white", relief="flat").pack(side="left", padx=2)
+
+Example_Label = tk.Label(Teach_Page, text="", font=("Consolas", 8), fg="#7fc8ff", bg=BG, justify="left")
+Example_Label.pack(anchor="w", padx=8)
+Check_Labels = [tk.Label(Teach_Page, text="", font=SMALL, bg=BG, justify="left", anchor="w", wraplength=340)
+                for _ in range(5)]
+for lab in Check_Labels:
+    lab.pack(anchor="w", padx=8)
+Result_Label = tk.Label(Teach_Page, text="", font=(FONT, 9, "bold"), fg="#ffd166", bg=BG, wraplength=340,
+                        justify="left")
+Result_Label.pack(anchor="w", padx=8, pady=(2, 0))
+
+
+def Teach_Update():
+    """Refresh the example and the checks (a few times a second)."""
+    t = Menu.teach
+    if not t.get("ready") or t["q"] is None:
+        return
+    if not teach_ui.get("loaded"):
+        Set_Sliders(t["q"])
+        teach_ui["loaded"] = True
+    if t["ideal"] is not None:
+        v = Menu.np.degrees(t["ideal"])
+        Example_Label.config(text="Best (example): " + "  ".join(f"J{j + 1} {v[j]:.0f}" for j in range(3)) + "\n"
+                                  "                " + "  ".join(f"J{j + 1} {v[j]:.0f}" for j in range(3, 6)))
+    checks, _ = Menu.Teach_Checks(t["q"])
+    for lab, item in zip(Check_Labels, checks + [None] * 5):
+        if item is None:
+            lab.config(text="")
+        else:
+            ok, text = item
+            lab.config(text=("OK  " if ok else "!  ") + text, fg="#2ee05a" if ok else "#ffb000")
+    if all(ok for ok, _ in checks):
+        Result_Label.config(text=t["result"] or "Ready - press SHOOT", fg="#2ee05a" if not t["result"] else "#ffd166")
+    else:
+        Result_Label.config(text=t["result"] or "Not ideal for a straight shot yet - see the warnings", fg="#ffb000")
+
+
 # ------------------------------------SAFETY PANEL (always visible, middle of the window)-------------------
 
 Safety_Panel = tk.Frame(window, bg=BG)
@@ -281,6 +393,13 @@ def Tick():
         return
     Menu.env.step(Menu.DT)
     sim = Menu.control["state"]
+    if sim == "ESTOPPED" and state["safety"] != "ESTOP":          # e-stopped from outside the panel (wall e-stop)
+        state["safety"] = "ESTOP"
+        Update_Safety()
+    if current_page["frame"] is Teach_Page:
+        teach_ui["tick"] += 1
+        if teach_ui["tick"] % 10 == 0:
+            Teach_Update()
     if state["safety"] == "ARMED":
         Show_Light({"RUNNING": "green", "DOOR_OPEN": "red", "ESTOPPED": "red"}.get(sim, "amber"))
     Step_Label.config(text=Menu.Step_Name() if Menu.state.get("step") is not None else "")

@@ -1,7 +1,7 @@
 """
-Jbot_Racker.py - Jaylee's robot (Jbot, from jbot.py) on its own turtlebot, racking the balls.
+Jbot_Racker.py - the racking robot (Jbot, from jbot.py) on its own turtlebot, racking the balls.
 
-Jbot's model (DH parameters, meshes) is Jaylee's and stays in jbot.py. This file
+Jbot's model (DH parameters, meshes) stays in jbot.py. This file
 only adds what is needed to USE it in the pool workcell:
 
   * Size      : Jbot is a myCobot-280-style arm. At 3.25x it reaches ~0.86 m,
@@ -29,10 +29,10 @@ from Pool_Scene import TURTLE_HEIGHT, Turtle_Pose
 
 # ------------------------------------SETTINGS-----------------------------------------------------
 
-JBOT_SIZE = 3.25                     # scale of Jaylee's myCobot-style model (joints AND meshes)
+JBOT_SIZE = 3.0                     # scale of the myCobot-style model (joints AND meshes)
 FIXED_JOINT = 3                      # index of Jbot's fixed DH link (never moves)
 
-TOOL_LENGTH = 0.25                   # flange -> vacuum cup face
+TOOL_LENGTH = 0.32                   # flange -> vacuum cup face
 ROD_RADIUS = 0.012
 CUP_RADIUS = 0.022
 
@@ -40,6 +40,17 @@ RACK_BAR = 0.012                     # rack frame bar thickness
 RACK_HEIGHT = 0.025                  # rack frame height (sits on the felt)
 RACK_GAP = 0.002                     # gap between a ball and the frame
 HANDLE_SIZE = 0.04                   # pad on the back of the rack that the vacuum cup grips
+
+
+def Rebuild_ETS(robot):
+    """After changing DH lengths, rebuild each link's ETS (the toolbox builds it once when the link
+    is made; jacob0 / ikine use it, fkine and the meshes use the new lengths)."""
+    for i, link in enumerate(robot.links):
+        ets = link._to_ets(link._sigma, link._theta, link.d, link.alpha, link.a, link.offset, link.isflip, link._mdh)
+        for et in ets:
+            if et.isjoint:
+                et.qlim, et.jindex = link.qlim, i
+        link._ets = ets
 
 
 # ------------------------------------IK (fixed link locked)-----------------------------------------------------
@@ -168,11 +179,12 @@ class Ball_Rack:
 # ------------------------------------JBOT ON ITS TURTLEBOT-----------------------------------------------------
 
 class Jbot_Mobile:
-    """Jaylee's Jbot, scaled to JBOT_SIZE, sitting on a turtlebot, with a vacuum-cup tool."""
+    """Jbot, scaled to JBOT_SIZE, sitting on a turtlebot, with a vacuum-cup tool."""
 
     def __init__(self, xyyaw):
         self.robot = MyRobot()
         self.robot.set_size(JBOT_SIZE)                  # joints
+        Rebuild_ETS(self.robot)                         # so IK / Jacobian use the scaled lengths too
         for mesh in self.robot.links_3d:
             mesh.scale = [JBOT_SIZE] * 3                # meshes (jbot.py draws them at 2x)
         self.turtle = Turtlebot3Waffle()

@@ -23,7 +23,8 @@ CLEARANCE = 0.01                                    # 1 cm of air between the cu
 
 # link capsules: radius of each segment between neighbouring joint frames (flange segment left out)
 LINK_RADII = {"D": [0.10, 0.075, 0.075, 0.06, 0.055],                     # Doosan M0609
-              "U": [0.0, 0.06, 0.05, 0.045, 0.045, 0.04, 0.035]}          # UR3 (URDF frames, first 9)
+              "U": [0.0, 0.06, 0.05, 0.045, 0.045, 0.04, 0.035],          # UR3 (URDF frames, first 9)
+              "M": [0.08, 0.067, 0.06, 0.053]}                           # Meca500 scaled x2 (wrist + gripper left out)
 
 
 def Link_Points(kind, robot, q):
@@ -145,7 +146,7 @@ def Edge_Free(a, b, free, res=0.05):
     return all(free(a + (b - a) * t) for t in np.linspace(0, 1, n + 1)[1:])
 
 
-def RRT_Connect(q0, q1, free, step=0.25, iters=2500, span=1.5):
+def RRT_Connect(q0, q1, free, step=0.2, iters=3000, span=1.0):
     """Joint-space path q0 -> q1 (list of waypoints) through configurations where free(q) is
     True, or None if none was found."""
     q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
@@ -194,7 +195,7 @@ def RRT_Connect(q0, q1, free, step=0.25, iters=2500, span=1.5):
     return None
 
 
-def Shortcut(path, free, rng, tries=80):
+def Shortcut(path, free, rng, tries=250):
     path = list(path)
     for _ in range(tries):
         if len(path) <= 2:
