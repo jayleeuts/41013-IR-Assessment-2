@@ -1,45 +1,50 @@
-"""
-Pool_Players.py - the three robots that play, each on its own turtlebot, all
-driven by the SAME shot code (Pool_Game.Take_Shot).
+# ------------------------------------POOL PLAYERS------------------------------------------------------------
+# The shooting robots on their turtlebots that the simulation steps through: the UR3 holds the cue in the
+# holder and the Meca500 holds the jump cue. Both offer the same small set of methods (base, joints, IK, cue
+# tip, carry pose, drawing).
 
-  Doosan_Player : Doosan M0609 + Cue_Holder + assembled cue
-  UR3_Player    : UR3 from the Robotics Toolbox (rtb.models.UR3) + the same holder and cue
-  Meca_Player   : the Meca500 (Meca_Jumper.py) + the jump cue - jump / masse shots
-
-Every player gives the game the same things:
-    xyyaw            turtlebot pose on the track
-    Set_Base()       put turtlebot + arm where xyyaw says
-    q                current joint angles (set it to move the arm)
-    Tip(q)           world pose of the cue tip (origin at the tip, +Z along the cue)
-    IK(T_tip, seed)  joint angles for a cue-tip pose (None if out of reach)
-    Carry_Tip()      cue held upright, used while driving
-    Draw()           move the cue / holder meshes to match the arm
-    VMAX             joint speed limits (rad/s)
-"""
 import numpy as np
 from math import pi
 from spatialmath import SE3
 import roboticstoolbox as rtb
 
-from Doosan_Robot import Doosan_Robot
 from ir_support_extra_robots.robots import Turtlebot3Waffle
 from Pool_Parts import Part_Path, Part_Mesh
 from Pool_Objects import Cue_Stick
-from Pool_Motion import Holder_Tool, Cue_Pose, Seed_Candidates
-from Pool_Scene import GROOVE_HEIGHT, TURTLE_HEIGHT, DOOSAN_FOOT, Turtle_Pose
+from Pool_Motion import Holder_Tool, Cue_Pose
+from Pool_Scene import GROOVE_HEIGHT, TURTLE_HEIGHT, Turtle_Pose
 from Meca_Jumper import Meca_Mobile, Meca_IK, TOOL as MECA_TOOL
 
+
+# ------------------------------------SHARED CUE MEASUREMENTS-------------------------------------------------
+# Where the handle's pin goes into the shaft and where the holder grips the cue, and the carry pose: the cue
+# held upright in front of the robot while it drives.
+
 HANDLE_PIN = 0.033
-GRIP_FROM_BUTT = 0.55                 # where the handle sits in the holder (from the butt)
+GRIP_FROM_BUTT = 0.55
 
 
-class _Holder_Player:
-    """Common code for a robot holding the assembled cue in the Cue_Holder."""
-    CARRY_GRIP_POINT = (0.40, 0.0, 0.65)      # cue held upright here (robot-base frame)
-    MOUNT = TURTLE_HEIGHT
+def Carry_Pose(base, grip_point, cue_length):
+    R_up = Cue_Pose([0, 0, 0], 180.0, -90.0).R
+    grip = base * SE3(*grip_point)
+    Rw = base.R @ R_up
+    return SE3.Rt(Rw, grip.t + (cue_length - GRIP_FROM_BUTT) * Rw[:, 2])
 
-    def __init__(self, name, xyyaw):
-        self.name = name
+
+# ------------------------------------UR3---------------------------------------------------------------------
+# The UR3 on its turtlebot holding the cue in the holder: joint speed limits, base and cue-tip poses, carry
+# pose, drawing and IK. It uses the toolbox's URDF model with the flange frame tool0.
+
+class UR3_Player:
+    VMAX = np.radians([180, 180, 180, 360, 360, 360])
+    CARRY_GRIP_POINT = (0.25, 0.0, 0.40)
+    END = "tool0"
+
+    def __init__(self, xyyaw):
+        self.name = "UR3"
+        self.robot = rtb.models.UR3()
+        self.kin = rtb.models.UR3()
+        self.robot.q = np.radians([0, -90, 90, -90, -90, 0])
         self.turtle = Turtlebot3Waffle()
         self.xyyaw = tuple(xyyaw)
         self.holder = Part_Mesh("Cue_Holder")
@@ -48,10 +53,9 @@ class _Holder_Player:
         self.tool = Holder_Tool(GROOVE_HEIGHT, self.cue.length - GRIP_FROM_BUTT)
         self.Set_Base()
 
-    # --- pose ---
     def Set_Base(self):
         self.turtle.base = Turtle_Pose(*self.xyyaw)
-        self.robot.base = self.turtle.base * SE3.Tz(self.MOUNT)
+        self.robot.base = self.turtle.base * SE3.Tz(TURTLE_HEIGHT)
 
     @property
     def q(self):
@@ -62,20 +66,26 @@ class _Holder_Player:
         self.robot.q = value
 
     def Flange(self, q=None):
-        return self.robot.fkine(self.robot.q if q is None else q)
+        return self.robot.fkine(self.robot.q if q is None else q, end=self.END)
 
     def Tip(self, q=None):
         return self.Flange(q) * self.tool
 
     def Carry_Tip(self):
-        """Cue held straight up in front of the robot (moves with the turtlebot)."""
-        R_up = Cue_Pose([0, 0, 0], 180.0, -90.0).R
-        base = self.robot.base
-        grip = base * SE3(*self.CARRY_GRIP_POINT)
-        Rw = base.R @ R_up
-        return SE3.Rt(Rw, grip.t + (self.cue.length - GRIP_FROM_BUTT) * Rw[:, 2])
+        return Carry_Pose(self.robot.base, self.CARRY_GRIP_POINT, self.cue.length)
 
-    # --- drawing ---
+    def IK(self, T_tip, q_seed=None):
+        T_local = self.robot.base.inv() * T_tip * self.tool.inv()
+        q1 = np.arctan2(T_local.t[1], T_local.t[0])
+        seeds = ([np.asarray(q_seed, dtype=float)] if q_seed is not None else [])
+        seeds += [np.array([q1 + a, b, c, -1.5, e, 0.0]) for a in (0, pi)
+                  for b, c in ((-1.2, 1.4), (-0.6, 0.9), (-1.8, 1.8)) for e in (-1.57, 1.57)]
+        for seed in seeds:
+            sol = self.kin.ikine_LM(T_local, q0=seed, end=self.END, joint_limits=True, slimit=1)
+            if sol.success:
+                return sol.q
+        return None
+
     def Draw(self):
         T_flange = self.Flange()
         self.holder.T = T_flange.A
@@ -89,55 +99,10 @@ class _Holder_Player:
         self.Draw()
 
 
-class Doosan_Player(_Holder_Player):
-    VMAX = np.radians([150, 150, 180, 225, 225, 225])
-    MOUNT = TURTLE_HEIGHT + DOOSAN_FOOT
-
-    def __init__(self, xyyaw):
-        self.robot = Doosan_Robot()
-        super().__init__("Doosan", xyyaw)
-
-    def IK(self, T_tip, q_seed=None):
-        T_flange = T_tip * self.tool.inv()
-        seeds = ([np.asarray(q_seed, dtype=float)] if q_seed is not None else []) + Seed_Candidates(self.robot, T_flange)
-        for seed in seeds:
-            sol = self.robot.ikine_LM(T_flange, q0=seed, joint_limits=False, slimit=1)
-            if sol.success:
-                return sol.q
-        return None
-
-
-class UR3_Player(_Holder_Player):
-    """UR3 from the Robotics Toolbox. Its ikine ignores .base, so IK is solved in the
-    robot's own base frame on a second (unmoved) copy of the model."""
-    VMAX = np.radians([180, 180, 180, 360, 360, 360])
-    CARRY_GRIP_POINT = (0.25, 0.0, 0.40)       # UR3 is smaller - hold the cue closer in
-    END = "tool0"
-
-    def __init__(self, xyyaw):
-        self.robot = rtb.models.UR3()
-        self.kin = rtb.models.UR3()
-        self.robot.q = np.radians([0, -90, 90, -90, -90, 0])
-        super().__init__("UR3", xyyaw)
-
-    def Flange(self, q=None):
-        return self.robot.fkine(self.robot.q if q is None else q, end=self.END)
-
-    def IK(self, T_tip, q_seed=None):
-        T_local = self.robot.base.inv() * T_tip * self.tool.inv()
-        q1 = np.arctan2(T_local.t[1], T_local.t[0])
-        seeds = ([np.asarray(q_seed, dtype=float)] if q_seed is not None else [])
-        seeds += [np.array([q1 + a, b, c, d, e, 0.0]) for a in (0, pi) for b, c in ((-1.2, 1.4), (-0.6, 0.9), (-1.8, 1.8))
-                  for d in (-1.5,) for e in (-1.57, 1.57)]
-        for seed in seeds:
-            sol = self.kin.ikine_LM(T_local, q0=seed, end=self.END, joint_limits=True, slimit=1)   # slimit=1: no random restarts
-            if sol.success:
-                return sol.q
-        return None
-
+# ------------------------------------MECA500-----------------------------------------------------------------
+# Wraps the scaled Meca500 on its turtlebot (Meca_Jumper.py) so it can be used exactly like the UR3.
 
 class Meca_Player:
-    """the Meca500 (scaled) with the jump cue - see Meca_Jumper.py."""
     VMAX = np.radians([150, 150, 180, 300, 300, 500])
 
     def __init__(self, xyyaw):

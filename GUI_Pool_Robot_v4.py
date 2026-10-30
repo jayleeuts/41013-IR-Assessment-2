@@ -1,31 +1,60 @@
+# ------------------------------------CONTROL PANEL-----------------------------------------------------------
+# The pop-up control panel (tkinter) for the pool workcell in Pool_Robot_Menu.py. It never moves robots
+# itself: every button becomes a request for the simulation, and a timer (Tick) advances the simulation and
+# refreshes the panel. It also links to the real PLC (Pool_PLC.py) so the real e-stop and stack light work
+# with the simulation.
+
 import math
+import numpy as np
 import tkinter as tk
 
 import Pool_Robot_Menu as Menu
+import Pool_PLC
 
 BG = "#20232a"
 FG = "#e6e6e6"
 FONT = "Segoe UI"
 
 
-# ------------------------------------THE WINDOW-----------------------------------------------------
+# ------------------------------------THE WINDOW--------------------------------------------------------------
+# A narrow window pinned to the top-left corner of the screen and kept on top, so it never hides the Swift
+# view.
 
 window = tk.Tk()
 window.title("Cue-T Interface")
-window.geometry("380x770+0+0")
+window.geometry("380x790+0+0")
 window.attributes("-topmost", True)
 window.configure(bg=BG)
 
 
-# ------------------------------------STATE-----------------------------------------------------
+# ------------------------------------STATE-------------------------------------------------------------------
+# The panel's own safety state (DISENGAGED, ENGAGED or ESTOP) and the link to the real PLC. When the PLC's own
+# program drives the stack light (PLC_MASTER), the panel follows the PLC rather than the other way round.
 
-state = {"safety": "DISENGAGED", "mode": "none"}
+state = {"safety": "DISENGAGED"}
+plc = Pool_PLC.PLC_Link()
+plc_prev = {"reset": False, "text": "", "light": None, "local_estop": False}
+PLC_MASTER = Pool_PLC.LIGHT_MODE == "PLC"
 
 
-# ------------------------------------STATUS AREA (always at the top)----------------------------------
+# ------------------------------------TOP BAR-----------------------------------------------------------------
+# Back and Quit sit beside the title, so they are always on screen whatever page is open.
 
-Title_Label = tk.Label(window, text="9-Ball Command", font=(FONT, 16, "bold"), fg="white", bg=BG)
-Title_Label.pack(pady=(10, 2))
+Top_Bar = tk.Frame(window, bg=BG)
+Top_Bar.pack(fill="x", pady=(8, 2))
+Top_Bar.columnconfigure(1, weight=1)
+Top_Bar.columnconfigure(0, minsize=80)
+Top_Bar.columnconfigure(2, minsize=80)
+Back_Button = tk.Button(Top_Bar, text="< Back", width=6, command=lambda: Show_Page(Main_Page))
+Back_Button.grid(row=0, column=0, padx=8)
+Title_Label = tk.Label(Top_Bar, text="9-Ball Command", font=(FONT, 13, "bold"), fg="white", bg=BG)
+Title_Label.grid(row=0, column=1)
+Quit_Button = tk.Button(Top_Bar, text="Quit", width=6, command=lambda: Menu.control.update(request="quit"))
+Quit_Button.grid(row=0, column=2, padx=8)
+
+
+# ------------------------------------STATUS AREA-------------------------------------------------------------
+# A small stack light, the safety state, the latest status message and the PLC connection line.
 
 Status_Row = tk.Frame(window, bg=BG)
 Status_Row.pack(pady=4)
@@ -44,9 +73,12 @@ Safety_Label.grid(row=0, column=1, sticky="w")
 Status_Label = tk.Label(Status_Row, text="", font=(FONT, 10), fg="#bbbbbb", bg=BG, anchor="w",
                         wraplength=240, justify="left")
 Status_Label.grid(row=1, column=1, sticky="w")
+PLC_Label = tk.Label(window, text="", font=(FONT, 9), fg="#8a8a8a", bg=BG, wraplength=360)
+PLC_Label.pack()
 
 
 def Show_Light(colour):
+    plc.Set_Light(colour)
     for name, lamp in Lamps.items():
         Light_Canvas.itemconfig(lamp, fill=LAMP_ON[name] if name == colour else LAMP_OFF[name])
 
@@ -55,10 +87,22 @@ def Set_Status(text):
     Status_Label.config(text=text)
 
 
-# ------------------------------------PAGES-----------------------------------------------------
+# ------------------------------------PAGES-------------------------------------------------------------------
+# The middle of the window swaps between pages (main, sequence, teach, controller). The window resizes to fit
+# each page but never grows past the screen: on a small screen the page scrolls (scroll bar or mouse wheel)
+# while the top bar and the safety buttons stay fixed, so Back, Quit and E-STOP are always reachable.
 
-Page_Area = tk.Frame(window, bg=BG)
-Page_Area.pack(fill="x", pady=6)
+Page_Holder = tk.Frame(window, bg=BG)
+Page_Holder.pack(fill="both", expand=True, pady=6)
+Page_Canvas = tk.Canvas(Page_Holder, bg=BG, highlightthickness=0, width=360)
+Page_Scroll = tk.Scrollbar(Page_Holder, orient="vertical", command=Page_Canvas.yview)
+Page_Canvas.configure(yscrollcommand=Page_Scroll.set)
+Page_Canvas.pack(side="left", fill="both", expand=True)
+Page_Area = tk.Frame(Page_Canvas, bg=BG)
+Page_Canvas.create_window((0, 0), window=Page_Area, anchor="nw", tags="page")
+Page_Area.bind("<Configure>", lambda e: Page_Canvas.configure(scrollregion=Page_Canvas.bbox("all")))
+Page_Canvas.bind("<Configure>", lambda e: Page_Canvas.itemconfig("page", width=e.width))
+window.bind_all("<MouseWheel>", lambda e: Page_Canvas.yview_scroll(int(-e.delta / 120), "units"))
 
 Main_Page = tk.Frame(Page_Area, bg=BG)
 Sequence_Page = tk.Frame(Page_Area, bg=BG)
@@ -70,11 +114,26 @@ def Show_Page(page):
         current_page["frame"].pack_forget()
     page.pack(fill="x")
     current_page["frame"] = page
-    window.geometry("380x880+0+0" if page is Teach_Page else "380x770+0+0")
     if page is Main_Page:
-        Back_Button.pack_forget()
+        Back_Button.grid_remove()
     else:
-        Back_Button.pack(side="left", padx=10)
+        Back_Button.grid()
+    Page_Canvas.yview_moveto(0)
+    window.update_idletasks()
+    Fit_Window()
+
+
+def Fit_Window():
+    needed = window.winfo_reqheight() - Page_Canvas.winfo_reqheight() + Page_Area.winfo_reqheight()
+    if needed == current_page.get("needed"):
+        return
+    current_page["needed"] = needed
+    room = window.winfo_screenheight() - 110
+    window.geometry(f"380x{min(needed + 6, room)}+0+0")
+    if needed + 6 > room:
+        Page_Scroll.pack(side="right", fill="y")
+    else:
+        Page_Scroll.pack_forget()
 
 
 def Big_Button(parent, text, command):
@@ -83,18 +142,22 @@ def Big_Button(parent, text, command):
                      activeforeground="white", relief="flat")
 
 
-# ---- main page: the three modes ----
+# ------------------------------------MAIN PAGE---------------------------------------------------------------
+# The three modes plus two safety demonstrations (a person opens the door, or presses the wall e-stop).
+# Teach and Controller only start when the cell is ENGAGED. Picking a mode completely drops the mode that was
+# running (Exhibition drops Teach / Controller as soon as its page opens).
 
 def On_Exhibition():
+    if Menu.control["mode"] in ("teach", "controller"):
+        Menu.control["request"] = "drop_mode"
     Show_Page(Sequence_Page)
     Set_Status("Exhibition: pick a step, or Run all")
 
 
 def On_Teach():
-    if state["safety"] != "ARMED":
-        Set_Status("Can't start Teach - press ARM first")
+    if state["safety"] != "ENGAGED":
+        Set_Status("Can't start Teach - press ENGAGE first")
         return
-    state["mode"] = "teach"
     teach_ui["loaded"] = False
     Menu.control["request"] = "teach"
     Show_Page(Teach_Page)
@@ -102,19 +165,28 @@ def On_Teach():
 
 
 def On_Controller():
-    state["mode"] = "controller"
-    Set_Status("Controller mode - coming next")
+    if state["safety"] != "ENGAGED":
+        Set_Status("Can't start Controller - press ENGAGE first")
+        return
+
+    Menu.control["request"] = "controller"
+
+    Show_Page(Controller_Page)
+
+    Set_Status("Controller mode: use the gamepad sticks")
 
 
 tk.Label(Main_Page, text="Modes", font=(FONT, 12, "bold"), fg=FG, bg=BG).pack(pady=(0, 4))
 Big_Button(Main_Page, "1. Exhibition", On_Exhibition).pack(pady=3)
 Big_Button(Main_Page, "2. Teach", On_Teach).pack(pady=3)
 Big_Button(Main_Page, "3. Controller", On_Controller).pack(pady=3)
-Big_Button(Main_Page, "Person opens the door (sensor test)", lambda: Menu.control.update(request="door")).pack(pady=(10, 3))
-Big_Button(Main_Page, "Person presses the E-STOP by the door", lambda: Menu.control.update(request="wall_estop")).pack(pady=3)
+Big_Button(Main_Page, "Person opens door", lambda: Menu.control.update(request="door")).pack(pady=(10, 3))
+Big_Button(Main_Page, "Person presses E-STOP", lambda: Menu.control.update(request="wall_estop")).pack(pady=3)
 
 
-# ---- sequence page: the exhibition steps ----
+# ------------------------------------SEQUENCE PAGE-----------------------------------------------------------
+# Jumps to any part of the exhibition: the four set-up steps, any ball (click it in the rack to jump to the
+# shot that pots it) or Run all. Potted balls are ticked off as the game goes on.
 
 SETUP_STEPS = ["Assembly", "Rack", "Chalk", "Break"]
 BALL_COLOURS = {1: "#f7c600", 2: "#1f4fd8", 3: "#d62828", 4: "#6a1b9a", 5: "#f77f00",
@@ -128,8 +200,8 @@ done_balls = set()
 
 
 def Go_To(step, name):
-    if state["safety"] != "ARMED":
-        Set_Status(f"Can't start {name} - press ARM first")
+    if state["safety"] != "ENGAGED":
+        Set_Status(f"Can't start {name} - press ENGAGE first")
         return
     Menu.control["request"] = ("goto", step)
     Set_Status(Menu.Step_Name(step))
@@ -205,10 +277,9 @@ Draw_Rack()
 Big_Button(Sequence_Page, "Run all", Run_All).pack(pady=(6, 0))
 
 
-# ---- teach page: the UR3 and one straight shot ----
-# Sliders set the UR3's six joints directly (like the joint-slider labs). Below them: the best
-# configuration for this shot, and the checks - each warning says what is wrong and which joint
-# to move. SHOOT rocks back once and strikes along the cue; the physics uses the real cue line.
+# ------------------------------------TEACH PAGE--------------------------------------------------------------
+# Six joint sliders and a speed slider for the UR3, SHOOT / Use example / Reset balls, the best
+# configuration and the live checks with their suggested fixes.
 
 SMALL = (FONT, 8)
 Teach_Page = tk.Frame(Page_Area, bg=BG)
@@ -217,34 +288,34 @@ Slider_Box = tk.Frame(Teach_Page, bg=BG)
 Slider_Box.pack()
 
 teach_ui = {"sync": False, "tick": 0}
-Joint_Sliders = []
 
 
 def On_Slider(_=None):
     if teach_ui["sync"] or Menu.teach["q"] is None:
         return
-    Menu.teach["q"] = Menu.np.radians([s.get() for s in Joint_Sliders])
-    Menu.teach["result"] = ""                                    # a new configuration - old result no longer applies
+    Menu.teach["q"] = np.radians([s.get() for s in Joint_Sliders])
+    Menu.teach["result"] = ""
 
 
-for j in range(6):
-    tk.Label(Slider_Box, text=f"J{j + 1}", font=SMALL, fg=FG, bg=BG).grid(row=j, column=0, sticky="se", padx=(0, 4))
-    s = tk.Scale(Slider_Box, from_=-180, to=180, resolution=0.1, orient="horizontal", length=250, width=10,
-                 sliderlength=16, font=SMALL, command=On_Slider, bg=BG, fg=FG, troughcolor="#3a3f4b",
-                 highlightthickness=0)
-    s.grid(row=j, column=1)
-    Joint_Sliders.append(s)
-tk.Label(Slider_Box, text="m/s", font=SMALL, fg=FG, bg=BG).grid(row=6, column=0, sticky="se", padx=(0, 4))
-Speed_Slider = tk.Scale(Slider_Box, from_=0.3, to=1.5, resolution=0.1, orient="horizontal", length=250, width=10,
-                        sliderlength=16, font=SMALL, command=lambda v: Menu.teach.update(speed=float(v)), bg=BG,
-                        fg=FG, troughcolor="#3a3f4b", highlightthickness=0)
+def Slider(row, name, low, high, command):
+    value = tk.DoubleVar()
+    tk.Label(Slider_Box, text=name, font=SMALL, fg=FG, bg=BG).grid(row=row, column=0, sticky="e", padx=(0, 4))
+    s = tk.Scale(Slider_Box, from_=low, to=high, resolution=0.1, orient="horizontal", length=240, width=10,
+                 sliderlength=16, showvalue=0, variable=value, command=command, bg=BG, fg=FG,
+                 troughcolor="#3a3f4b", highlightthickness=0)
+    s.grid(row=row, column=1, pady=3)
+    tk.Label(Slider_Box, textvariable=value, font=SMALL, fg=FG, bg=BG, width=6, anchor="e").grid(row=row, column=2)
+    return s
+
+
+Joint_Sliders = [Slider(j, f"J{j + 1}", -180, 180, On_Slider) for j in range(6)]
+Speed_Slider = Slider(6, "m/s", 0.3, 1.5, lambda v: Menu.teach.update(speed=float(v)))
 Speed_Slider.set(0.7)
-Speed_Slider.grid(row=6, column=1)
 
 
 def Set_Sliders(q):
     teach_ui["sync"] = True
-    for s, v in zip(Joint_Sliders, Menu.np.degrees(q)):
+    for s, v in zip(Joint_Sliders, np.degrees(q)):
         s.set(round((v + 180) % 360 - 180, 1))
     teach_ui["sync"] = False
     On_Slider()
@@ -253,12 +324,12 @@ def Set_Sliders(q):
 def Use_Example():
     if Menu.teach["ideal"] is not None:
         Set_Sliders(Menu.teach["ideal"])
-        Menu.teach["q"] = Menu.np.array(Menu.teach["ideal"], dtype=float)      # exact, not rounded to the sliders
+        Menu.teach["q"] = np.array(Menu.teach["ideal"], dtype=float)
 
 
 def Shoot():
-    if state["safety"] != "ARMED":
-        Set_Status("Press ARM first")
+    if state["safety"] != "ENGAGED":
+        Set_Status("Press ENGAGE first")
         return
     Menu.teach["result"] = ""
     Menu.control["request"] = "teach_shoot"
@@ -285,7 +356,6 @@ Result_Label.pack(anchor="w", padx=8, pady=(2, 0))
 
 
 def Teach_Update():
-    """Refresh the example and the checks (a few times a second)."""
     t = Menu.teach
     if not t.get("ready") or t["q"] is None:
         return
@@ -293,7 +363,7 @@ def Teach_Update():
         Set_Sliders(t["q"])
         teach_ui["loaded"] = True
     if t["ideal"] is not None:
-        v = Menu.np.degrees(t["ideal"])
+        v = np.degrees(t["ideal"])
         Example_Label.config(text="Best (example): " + "  ".join(f"J{j + 1} {v[j]:.0f}" for j in range(3)) + "\n"
                                   "                " + "  ".join(f"J{j + 1} {v[j]:.0f}" for j in range(3, 6)))
     checks, _ = Menu.Teach_Checks(t["q"])
@@ -309,98 +379,202 @@ def Teach_Update():
         Result_Label.config(text=t["result"] or "Not ideal for a straight shot yet - see the warnings", fg="#ffb000")
 
 
-# ------------------------------------SAFETY PANEL (always visible, middle of the window)-------------------
+# ------------------------------------CONTROLLER PAGE---------------------------------------------------------
+# Shows the UR3's joint angles live while it is driven with the gamepad.
+
+Controller_Page = tk.Frame(Page_Area, bg=BG)
+
+tk.Label(Controller_Page, text="Controller - UR3 joint angles",
+         font=(FONT, 11, "bold"), fg=FG, bg=BG).pack(pady=(0, 6))
+
+Joint_Labels = []
+
+for j in range(6):
+    row = tk.Frame(Controller_Page, bg=BG)
+    row.pack(fill="x", padx=10, pady=2)
+
+    tk.Label(row, text=f"J{j + 1}", font=SMALL, fg=FG, bg=BG,
+             width=4, anchor="w").pack(side="left")
+
+    value_label = tk.Label(row, text="0.0 deg", font=("Consolas", 10),
+                           fg="#7fc8ff", bg=BG, width=14, anchor="e")
+    value_label.pack(side="right")
+
+    Joint_Labels.append(value_label)
+
+
+def Update_Joint_Labels():
+    q = Menu.ur3_p.q
+
+    if q is None:
+        return
+
+    q_deg = np.degrees(np.asarray(q, dtype=float))
+
+    for label, value in zip(Joint_Labels, q_deg):
+        label.config(text=f"{value:8.1f} deg")
+
+
+# ------------------------------------SAFETY PANEL------------------------------------------------------------
+# Always visible. E-STOP stops everything at once; RESET acknowledges the stop (only once any real e-stop
+# is released); ENGAGE / DISENGAGE lets the robots move or holds them still. When the PLC is in charge, ENGAGE
+# only works while the PLC shows green.
 
 Safety_Panel = tk.Frame(window, bg=BG)
-Safety_Panel.pack(expand=True)
+Safety_Panel.pack(side="bottom", pady=(4, 12), before=Page_Holder)
+
+
+def PLC_Hold():
+    if plc.Active("estop"):
+        return "PLC E-STOP pressed"
+    if PLC_MASTER and Pool_PLC.LIGHT_MEANING.get(plc.PLC_Light()) == "ESTOP":
+        return "PLC in E-STOP (red light)"
+    if plc.Comms_Fault():
+        return "PLC COMMS FAULT - no reply from the PLC"
+    return None
 
 
 def On_EStop_Button():
+    if state["safety"] == "ESTOP" and PLC_Hold():
+        Set_Status(PLC_Hold() + " - clear it before resetting")
+        return
     if state["safety"] == "ESTOP":
+        plc_prev["local_estop"] = False
         state["safety"] = "DISENGAGED"
-        Menu.control["request"] = "reset"
-        Set_Status("E-stop released. Nothing moves until you press ARM.")
+        Menu.Handle_Request("reset")
+        Set_Status("E-stop reset. Nothing moves until you press ENGAGE.")
     else:
+        plc_prev["local_estop"] = True
         state["safety"] = "ESTOP"
         Menu.Handle_Request("estop")
         Set_Status("E-STOP - all motion stopped")
     Update_Safety()
 
 
-def On_Arm_Button():
+def On_Engage_Button(from_plc=False):
+    if (PLC_MASTER and plc.Connected() and not from_plc and state["safety"] == "DISENGAGED"
+            and Pool_PLC.LIGHT_MEANING.get(plc.PLC_Light()) != "ENGAGED"):
+        Set_Status("The PLC isn't ready (not green) - press RESET on the PLC panel first")
+        return
     if state["safety"] == "DISENGAGED":
-        state["safety"] = "ARMED"
-        Menu.control["request"] = "resume"
-        Set_Status("Armed - robots may move")
-    elif state["safety"] == "ARMED":
+        state["safety"] = "ENGAGED"
+        Menu.Handle_Request("resume")
+        Set_Status("Engaged - robots may move")
+    elif state["safety"] == "ENGAGED":
         state["safety"] = "DISENGAGED"
-        Menu.control["request"] = "pause"
-        Set_Status("Disarmed - robots hold still")
+        Menu.Handle_Request("pause")
+        Set_Status("Disengaged - robots hold still")
     else:
-        Set_Status("Release the E-STOP first (press DISENGAGE)")
+        Set_Status("Reset the E-STOP first (press RESET)")
     Update_Safety()
 
 
-EStop_Button = tk.Button(Safety_Panel, command=On_EStop_Button, width=14, height=3,
-                         font=(FONT, 16, "bold"), fg="white", relief="raised", bd=4)
-EStop_Button.pack(pady=(4, 6))
-Arm_Button = tk.Button(Safety_Panel, command=On_Arm_Button, width=14, font=(FONT, 11, "bold"),
-                       relief="flat")
-Arm_Button.pack()
+EStop_Button = tk.Button(Safety_Panel, command=On_EStop_Button, width=14, height=2,
+                         font=(FONT, 15, "bold"), fg="white", relief="raised", bd=4)
+EStop_Button.pack(pady=(0, 6))
+Engage_Button = tk.Button(Safety_Panel, command=On_Engage_Button, width=14, font=(FONT, 11, "bold"), relief="flat")
+Engage_Button.pack()
 
 
 def Update_Safety():
     s = state["safety"]
     if s == "ESTOP":
-        EStop_Button.config(text="DISENGAGE", bg="#8b0000", activebackground="#a00000")
-        Arm_Button.config(text="ARM", bg="#444444", fg="#888888", state="disabled")
+        EStop_Button.config(text="RESET", bg="#8b0000", activebackground="#a00000")
+        Engage_Button.config(text="ENGAGE", bg="#444444", fg="#888888", state="disabled")
         Safety_Label.config(text="E-STOP", fg=LAMP_ON["red"])
         Show_Light("red")
     elif s == "DISENGAGED":
         EStop_Button.config(text="E-STOP", bg="#d62828", activebackground="#ff4444")
-        Arm_Button.config(text="ARM", bg="#c98a00", fg="white", state="normal")
+        Engage_Button.config(text="ENGAGE", bg="#c98a00", fg="white", state="normal")
         Safety_Label.config(text="DISENGAGED", fg=LAMP_ON["amber"])
         Show_Light("amber")
     else:
         EStop_Button.config(text="E-STOP", bg="#d62828", activebackground="#ff4444")
-        Arm_Button.config(text="DISARM", bg="#2e7d32", fg="white", state="normal")
-        Safety_Label.config(text="ARMED", fg=LAMP_ON["green"])
+        Engage_Button.config(text="DISENGAGE", bg="#2e7d32", fg="white", state="normal")
+        Safety_Label.config(text="ENGAGED", fg=LAMP_ON["green"])
         Show_Light("green")
 
 
-# ------------------------------------BOTTOM BAR: Back + Quit (always at the very bottom)----------------
-
-Bottom_Bar = tk.Frame(window, bg=BG)
-Bottom_Bar.pack(side="bottom", fill="x", pady=10)
-Back_Button = tk.Button(Bottom_Bar, text="< Back", width=10, command=lambda: Show_Page(Main_Page))
-Quit_Button = tk.Button(Bottom_Bar, text="Quit", width=10, command=lambda: Menu.control.update(request="quit"))
-Quit_Button.pack(side="right", padx=10)
-
-
-# ------------------------------------START-----------------------------------------------------
+# ------------------------------------START-------------------------------------------------------------------
+# Opens on the main page, DISENGAGED, so nothing can move until ENGAGE is pressed.
 
 Show_Page(Main_Page)
 Update_Safety()
-Set_Status("Ready - press ARM, then pick a mode")
+Set_Status("Ready - press ENGAGE, then pick a mode")
 
 
 last = {"text": Menu.control.get("text")}
 
 
+# ------------------------------------REAL PLC LINK-----------------------------------------------------------
+# Every update the real PLC's inputs and stack light are read. A pressed real e-stop, a red light or a lost
+# connection stops the cell; a change of the PLC's light to yellow or green is copied to the panel
+# (acknowledge or arm). Only changes are followed, so the panel's own buttons still work in between.
+
+def Follow_PLC_Light():
+    colour = plc.PLC_Light()
+    before, plc_prev["light"] = plc_prev["light"], colour
+    if colour is None or colour == before:
+        return
+    want = Pool_PLC.LIGHT_MEANING.get(colour)
+    if want != "ESTOP" and state["safety"] == "ESTOP" and not plc_prev["local_estop"]:
+        state["safety"] = "DISENGAGED"
+        Menu.Handle_Request("reset")
+        Update_Safety()
+        Menu.Set_Status("PLC reset - e-stop acknowledged")
+    if want == "ENGAGED" and state["safety"] == "DISENGAGED" and before is not None:
+        On_Engage_Button(from_plc=True)
+        Menu.Set_Status("PLC green - engaged, robots may move")
+    elif want == "DISENGAGED" and state["safety"] == "ENGAGED":
+        On_Engage_Button(from_plc=True)
+        Menu.Set_Status("PLC yellow - disengaged, robots hold still")
+
+
+def PLC_Check():
+    hold = PLC_Hold()
+    if hold and state["safety"] != "ESTOP":
+        state["safety"] = "ESTOP"
+        Menu.Handle_Request("estop")
+        Update_Safety()
+        Menu.Set_Status(hold + " - all motion stopped. Clear it, then press RESET.")
+    pressed = plc.Active("reset")
+    if pressed and not plc_prev["reset"] and state["safety"] == "ESTOP":
+        On_EStop_Button()
+    plc_prev["reset"] = pressed
+    if PLC_MASTER:
+        Follow_PLC_Light()
+    text = plc.Status_Text()
+    if PLC_MASTER and plc.Connected():
+        text += f"  |  PLC light: {plc.PLC_Light() or 'off'}"
+    if text != plc_prev["text"]:
+        plc_prev["text"] = text
+        PLC_Label.config(text=text, fg="#2ee05a" if plc.Connected() else
+                         ("#ff2a2a" if plc.Comms_Fault() else "#8a8a8a"))
+
+
+# ------------------------------------MAIN LOOP---------------------------------------------------------------
+# Runs about every millisecond: one simulation update, the PLC check, then the panel is refreshed (safety
+# state, light, status, teach checks, joint readout, potted balls).
+
 def Tick():
     if not Menu.Step_Once():
-        window.destroy()
+        plc.Stop()
+        window.after(400, window.destroy)
         return
+    PLC_Check()
     Menu.env.step(Menu.DT)
     sim = Menu.control["state"]
-    if sim == "ESTOPPED" and state["safety"] != "ESTOP":          # e-stopped from outside the panel (wall e-stop)
+    if sim == "ESTOPPED" and state["safety"] != "ESTOP":
         state["safety"] = "ESTOP"
         Update_Safety()
     if current_page["frame"] is Teach_Page:
         teach_ui["tick"] += 1
         if teach_ui["tick"] % 10 == 0:
             Teach_Update()
-    if state["safety"] == "ARMED":
+            Fit_Window()
+    if current_page["frame"] is Controller_Page:
+        Update_Joint_Labels()
+    if state["safety"] == "ENGAGED":
         Show_Light({"RUNNING": "green", "DOOR_OPEN": "red", "ESTOPPED": "red"}.get(sim, "amber"))
     Step_Label.config(text=Menu.Step_Name() if Menu.state.get("step") is not None else "")
     if Menu.control.get("text") != last["text"]:

@@ -1,22 +1,7 @@
-"""
-Jbot_Racker.py - the racking robot (Jbot, from jbot.py) on its own turtlebot, racking the balls.
+# ------------------------------------JBOT RACKER-------------------------------------------------------------
+# The racking robot (the Jbot model from jbot.py) scaled up on its own turtlebot with a suction cup,
+# and the diamond rack it fills.
 
-Jbot's model (DH parameters, meshes) stays in jbot.py. This file
-only adds what is needed to USE it in the pool workcell:
-
-  * Size      : Jbot is a myCobot-280-style arm. At 3.25x it reaches ~0.86 m,
-                like an industrial cobot (Doosan M0609 = 0.9 m) - enough to reach
-                every pocket AND the rack spot from the track. Joints and meshes
-                are scaled together so they always line up.
-  * Mounting  : base sits on top of its own turtlebot and moves with it.
-  * Tool      : a vacuum cup on a 0.25 m rod, pointing down - it can reach into
-                a pocket (55 mm hole) and lift a ball out.
-  * Tray      : a 9-ball diamond rack frame that sits on the felt near the foot
-                cushion. Jbot fills it, slides it to the foot spot, then lifts
-                it off so the balls stay racked.
-  * IK        : Jbot's 4th DH link is FIXED (it never moves). The toolbox IK
-                treats it as a joint, so Jbot_IK below solves with it locked.
-"""
 import numpy as np
 from math import pi
 from spatialmath import SE3
@@ -25,35 +10,28 @@ import spatialgeometry as sg
 from jbot import MyRobot
 from ir_support_extra_robots.robots import Turtlebot3Waffle
 from Pool_Scene import TURTLE_HEIGHT, Turtle_Pose
+from Pool_Motion import Rebuild_ETS
 
 
-# ------------------------------------SETTINGS-----------------------------------------------------
+# ------------------------------------SETTINGS----------------------------------------------------------------
+# The robot's scale, the joint that is held fixed, and the sizes of the suction tool and the rack.
 
-JBOT_SIZE = 3.0                     # scale of the myCobot-style model (joints AND meshes)
-FIXED_JOINT = 3                      # index of Jbot's fixed DH link (never moves)
+JBOT_SIZE = 3.0
+FIXED_JOINT = 3
 
-TOOL_LENGTH = 0.32                   # flange -> vacuum cup face
+TOOL_LENGTH = 0.32
 ROD_RADIUS = 0.012
 CUP_RADIUS = 0.022
 
-RACK_BAR = 0.012                     # rack frame bar thickness
-RACK_HEIGHT = 0.025                  # rack frame height (sits on the felt)
-RACK_GAP = 0.002                     # gap between a ball and the frame
-HANDLE_SIZE = 0.04                   # pad on the back of the rack that the vacuum cup grips
+RACK_BAR = 0.012
+RACK_HEIGHT = 0.025
+RACK_GAP = 0.002
+HANDLE_SIZE = 0.04
 
 
-def Rebuild_ETS(robot):
-    """After changing DH lengths, rebuild each link's ETS (the toolbox builds it once when the link
-    is made; jacob0 / ikine use it, fkine and the meshes use the new lengths)."""
-    for i, link in enumerate(robot.links):
-        ets = link._to_ets(link._sigma, link._theta, link.d, link.alpha, link.a, link.offset, link.isflip, link._mdh)
-        for et in ets:
-            if et.isjoint:
-                et.qlim, et.jindex = link.qlim, i
-        link._ets = ets
-
-
-# ------------------------------------IK (fixed link locked)-----------------------------------------------------
+# ------------------------------------IK (FIXED LINK LOCKED)--------------------------------------------------
+# Damped least-squares IK that keeps one joint fixed and only matches the cup's position and pointing
+# direction: the cup is round, so its spin doesn't matter.
 
 def _Pose_Error(T, Tg):
     return np.r_[Tg[:3, 3] - T[:3, 3],
@@ -62,12 +40,6 @@ def _Pose_Error(T, Tg):
 
 
 def Jbot_IK(robot, T_goal, q_seed=None, mask=(1, 1, 1, 1, 1, 0), iters=200, tries=20, tol=1e-4):
-    """Damped least-squares IK with the fixed link held at 0 and joint limits kept.
-
-    mask (1,1,1,1,1,0) = match position and pointing direction, any spin about
-    the world vertical (the vacuum cup is round, so spin doesn't matter).
-    Tries q_seed first so motions stay smooth; returns None if nothing works.
-    """
     rng = np.random.default_rng(0)
     lo, hi = robot.qlim[0].copy(), robot.qlim[1].copy()
     W = np.diag(np.array(mask, dtype=float))
@@ -100,14 +72,13 @@ def Jbot_IK(robot, T_goal, q_seed=None, mask=(1, 1, 1, 1, 1, 0), iters=200, trie
 
 
 def Tool_Down(x, y, z):
-    """Vacuum cup face at (x, y, z), pointing straight down."""
     return SE3(x, y, z) * SE3.Rx(pi)
 
 
-# ------------------------------------THE RACK (TRAY)-----------------------------------------------------
+# ------------------------------------THE RACK----------------------------------------------------------------
+# The nine ball positions of the 1-2-3-2-1 diamond and the rack model with its grip pad.
 
 def Rack_Slots(ball_radius):
-    """Ball centres in the rack frame (apex ball at the origin, rows going +x): 1-2-3-2-1."""
     h = np.sqrt(3) * ball_radius
     slots = []
     for row, n in enumerate([1, 2, 3, 2, 1]):
@@ -117,15 +88,9 @@ def Rack_Slots(ball_radius):
 
 
 class Ball_Rack:
-    """Diamond-shaped 9-ball rack frame (4 bars) with a pad on the back to grip.
-
-    Rack frame: origin at the APEX ball's centre on the felt, +x towards the back.
-    """
-
     def __init__(self, ball_radius, felt_z, color=(0.55, 0.35, 0.15, 1)):
         self.r, self.felt_z = ball_radius, felt_z
         h = np.sqrt(3) * ball_radius
-        # ball-centre diamond, then pushed out so the bars just clear the balls
         A, B, C, D = (np.array(p) for p in [(0, 0), (2 * h, -2 * ball_radius), (4 * h, 0), (2 * h, 2 * ball_radius)])
         off = ball_radius + RACK_GAP + RACK_BAR / 2
         corners = self._Offset([A, B, C, D], off)
@@ -144,13 +109,12 @@ class Ball_Rack:
 
     @staticmethod
     def _Offset(poly, d):
-        """Push each edge of an anticlockwise convex polygon outward by d; return new corners."""
         lines = []
         n = len(poly)
         for i in range(n):
             p, q = poly[i], poly[(i + 1) % n]
             t = (q - p) / np.linalg.norm(q - p)
-            normal = np.array([t[1], -t[0]])                        # outward for anticlockwise order
+            normal = np.array([t[1], -t[0]])
             lines.append((p + d * normal, t))
         out = []
         for i in range(n):
@@ -160,11 +124,9 @@ class Ball_Rack:
         return out
 
     def Handle_Top(self):
-        """World position of the top of the grip pad."""
         return (self.T * SE3(*self.handle_offset) * SE3.Tz(0.01)).t
 
     def Place(self, T):
-        """T = rack frame in the world (apex ball centre, +x to the back)."""
         self.T = T
         for bar, pose in zip(self.bars, self._bar_poses):
             bar.T = (T * pose).A
@@ -176,17 +138,16 @@ class Ball_Rack:
         env.add(self.handle)
 
 
-# ------------------------------------JBOT ON ITS TURTLEBOT-----------------------------------------------------
+# ------------------------------------JBOT ON ITS TURTLEBOT---------------------------------------------------
+# Builds and scales the robot, keeps its base on the track, and draws the suction tool.
 
 class Jbot_Mobile:
-    """Jbot, scaled to JBOT_SIZE, sitting on a turtlebot, with a vacuum-cup tool."""
-
     def __init__(self, xyyaw):
         self.robot = MyRobot()
-        self.robot.set_size(JBOT_SIZE)                  # joints
-        Rebuild_ETS(self.robot)                         # so IK / Jacobian use the scaled lengths too
+        self.robot.set_size(JBOT_SIZE)
+        Rebuild_ETS(self.robot)
         for mesh in self.robot.links_3d:
-            mesh.scale = [JBOT_SIZE] * 3                # meshes (jbot.py draws them at 2x)
+            mesh.scale = [JBOT_SIZE] * 3
         self.turtle = Turtlebot3Waffle()
         self.xyyaw = tuple(xyyaw)
         self.tool = SE3.Tz(TOOL_LENGTH)
@@ -199,7 +160,6 @@ class Jbot_Mobile:
         self.robot.base = self.turtle.base * SE3.Tz(TURTLE_HEIGHT)
 
     def Tool_Pose(self, q=None):
-        """World pose of the vacuum cup face."""
         return self.robot.fkine(self.robot.q if q is None else q) * self.tool
 
     def Draw_Tool(self):

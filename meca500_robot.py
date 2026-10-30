@@ -1,3 +1,7 @@
+# ------------------------------------MECA500-----------------------------------------------------------------
+# The Meca500 as a DH robot with its CAD meshes (MECA500_Mesh_Parts), used by the station and by the jump
+# shot robot.
+
 import os
 from math import pi
 import numpy as np
@@ -6,10 +10,7 @@ from ir_support.robots.UTSMeshRobot import UTSMeshRobot
 
 
 class Meca500_Robot(UTSMeshRobot):
-    """Mecademic Meca500 6-DOF Robot model ported for UTS Robotics Toolbox and Swift."""
-
     def __init__(self, base=None):
-        # 6 Links based on standard Meca500 DH Parameters
         links = [
             rtb.RevoluteDH(
                 d=0.135,
@@ -55,19 +56,17 @@ class Meca500_Robot(UTSMeshRobot):
             ),
         ]
 
-        # Directory containing your assessment meshes
         current_dir = os.path.abspath(os.path.dirname(__file__))
         mesh_dir = os.path.join(current_dir, "MECA500_Mesh_Parts")
 
-        # Standard mesh mapping: Update the right side values to match your exact STL/DAE filenames (without .stl/.dae extension)
         link3d_names = {
-            "link0": "link0",  # Base mesh filename
-            "link1": "link1",  # Link 1 mesh filename
-            "link2": "link2",  # Link 2 mesh filename
-            "link3": "link3",  # Link 3 mesh filename
-            "link4": "link4",  # Link 4 mesh filename
-            "link5": "link5",  # Link 5 mesh filename
-            "link6": "link6",  # Link 6 mesh filename
+            "link0": "link0",
+            "link1": "link1",
+            "link2": "link2",
+            "link3": "link3",
+            "link4": "link4",
+            "link5": "link5",
+            "link6": "link6",
         }
 
         super().__init__(
@@ -82,9 +81,6 @@ class Meca500_Robot(UTSMeshRobot):
             qtest_transforms=[np.eye(4)] * 7,
         )
 
-        # The CAD STL meshes were exported at joint configuration [-pi/2, -pi/2, 0, 0, 0, 0]
-        # (arm reaching along +Y instead of +X, and Link 2 horizontal instead of vertical).
-        # We recalibrate the mesh relation matrices to that CAD configuration:
         q_cad = [-pi / 2, -pi / 2, 0.0, 0.0, 0.0, 0.0]
         link_transforms_cad = self._get_transforms(q_cad)
         self._relation_matrices = [

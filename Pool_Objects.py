@@ -1,25 +1,18 @@
-"""
-Pool_Objects.py - cue ball and cue stick for Swift, built from your own .dae files.
+# ------------------------------------POOL OBJECTS------------------------------------------------------------
+# The cue ball and the two-part cue stick built from our own .dae models. The .dae file is read directly to
+# measure each part (length, radius, which end is which), so the meshes can be placed exactly where the
+# simulation needs them.
 
-You don't have to export the meshes with any particular origin or orientation.
-Each file is measured when it loads:
-  * Ball  -> its centre is found, so ball.Place(xyz) puts the CENTRE at xyz.
-  * Shaft -> its long axis is found, and the thinner end is taken as the TIP.
-  * Handle-> its long axis is found, the thinner end joins onto the shaft
-             (handle_insert = how far a joint pin slides into the shaft).
-
-The cue is described by ONE frame (the "cue frame"):
-    origin = cue tip,  +Z = direction the cue points (towards the ball).
-So the rest of your code only ever has to say where the tip is and which way
-it points - exactly what IK needs.
-"""
 import xml.etree.ElementTree as ET
 import numpy as np
 import spatialgeometry as sg
 from spatialmath import SE3
 
 
-# ------------------------------------------------------------ reading a .dae
+# ------------------------------------READING A .DAE----------------------------------------------------------
+# Collects every vertex in the model with its node transforms applied, in metres, then guesses millimetres
+# versus metres from the size and measures a rod-shaped part along its long axis.
+
 def _strip_ns(root):
     for el in root.iter():
         if "}" in el.tag:
@@ -28,7 +21,6 @@ def _strip_ns(root):
 
 
 def _node_matrix(node):
-    """Local transform of a <node> (matrix / translate / rotate / scale)."""
     M = np.eye(4)
     for child in node:
         vals = np.array((child.text or "").split(), dtype=float)
@@ -44,13 +36,11 @@ def _node_matrix(node):
 
 
 def Dae_Vertices(path):
-    """All vertex positions of a .dae file, in metres, as an (N, 3) array."""
     root = _strip_ns(ET.parse(path).getroot())
 
     unit = root.find("./asset/unit")
     metres_per_unit = float(unit.get("meter", 1.0)) if unit is not None else 1.0
 
-    # geometry id -> raw positions
     geoms = {}
     for g in root.iter("geometry"):
         mesh = g.find("mesh")
@@ -64,7 +54,6 @@ def Dae_Vertices(path):
         arr = np.array(src.find("float_array").text.split(), dtype=float)
         geoms[g.get("id")] = arr.reshape(-1, 3)
 
-    # apply scene-graph transforms, if the file has them
     out = []
 
     def walk(node, M_parent):
@@ -85,18 +74,13 @@ def Dae_Vertices(path):
 
 
 def _guess_scale(size_m, expected_m, name):
-    """If a part is ~1000x too big, it was exported in mm."""
-    if size_m > 20 * expected_m:
-        print(f"[{name}] looks like it is in millimetres - scaling by 0.001")
-        return 0.001
-    return 1.0
+    return 0.001 if size_m > 20 * expected_m else 1.0
 
 
 def _rot_a_to_b(a, b):
-    """Rotation matrix that turns unit vector a onto unit vector b."""
     a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
     v, c = np.cross(a, b), float(np.dot(a, b))
-    if np.isclose(c, -1.0):                       # opposite: 180 deg about any perpendicular
+    if np.isclose(c, -1.0):
         perp = np.eye(3)[np.argmin(np.abs(a))]
         axis = np.cross(a, perp)
         axis /= np.linalg.norm(axis)
@@ -106,9 +90,8 @@ def _rot_a_to_b(a, b):
 
 
 def _measure_rod(verts, flip=False):
-    """Long axis, length, and the centres of the thin and thick ends of a rod."""
     lo, hi = verts.min(0), verts.max(0)
-    k = int(np.argmax(hi - lo))                   # longest bounding-box direction
+    k = int(np.argmax(hi - lo))
     length = hi[k] - lo[k]
     centre = (lo + hi) / 2
     others = [i for i in range(3) if i != k]
@@ -133,14 +116,15 @@ def _measure_rod(verts, flip=False):
 
 
 def _part_offset(point, direction, target_z):
-    """Transform placing mesh `point` at (0,0,target_z) of the cue frame,
-    with mesh `direction` lined up with the cue frame's +Z."""
     R = _rot_a_to_b(direction, np.array([0.0, 0.0, 1.0]))
     t = np.array([0.0, 0.0, target_z]) - R @ point
     return SE3.Rt(R, t)
 
 
-# ------------------------------------------------------------ objects
+# ------------------------------------OBJECTS-----------------------------------------------------------------
+# Cue_Ball places and rolls a ball mesh. Cue_Stick places the shaft and handle from the cue tip pose; before
+# assembly the shaft can be given its own pose.
+
 class Cue_Ball:
     def __init__(self, dae_path, color=None):
         v = Dae_Vertices(dae_path)
@@ -148,13 +132,11 @@ class Cue_Ball:
         scale = _guess_scale(size, 0.057, "ball")
         v = v * scale
         self.radius = float(np.ptp(v, axis=0).max()) / 2
-        self._centre = (v.min(0) + v.max(0)) / 2      # mesh origin -> ball centre
+        self._centre = (v.min(0) + v.max(0)) / 2
         kw = {"color": color} if color is not None else {}
         self.mesh = sg.Mesh(dae_path, scale=[scale] * 3, **kw)
-        print(f"[ball] radius {self.radius * 1000:.1f} mm")
 
     def Place(self, centre_xyz, R=None):
-        """Put the ball's CENTRE at a world position, optionally rotated by R (3x3)."""
         R = np.eye(3) if R is None else np.asarray(R)
         self.mesh.T = (SE3.Rt(R, centre_xyz, check=False) * SE3(*(-self._centre))).A
 
@@ -171,21 +153,16 @@ class Cue_Stick:
         h_scale = _guess_scale(float(np.ptp(vh, axis=0).max()), 1.0, "handle")
         vs, vh = vs * s_scale, vh * h_scale
 
-        # shaft: thin end is the TIP -> origin of cue frame, pointing +Z
         L_s, tip_pt, s_dir = _measure_rod(vs, flip_shaft)
         self._shaft_off = _part_offset(tip_pt, s_dir, 0.0)
 
-        # handle: thin end joins the back of the shaft, at z = -L_s.
-        # handle_insert pushes it forward so a joint pin sits inside the shaft.
         L_h, joint_pt, h_dir = _measure_rod(vh, flip_handle)
         self._handle_off = _part_offset(joint_pt, h_dir, -L_s + handle_insert)
         L_h -= handle_insert
 
         self.shaft_length = L_s
-        self.handle_length = L_h
         self.handle_insert = handle_insert
         self.length = L_s + L_h
-        print(f"[cue] shaft {L_s:.3f} m + handle {L_h:.3f} m = {self.length:.3f} m")
 
         self.shaft = sg.Mesh(shaft_path, scale=[s_scale] * 3,
                              **({"color": shaft_color} if shaft_color else {}))
@@ -193,11 +170,6 @@ class Cue_Stick:
                               **({"color": handle_color} if handle_color else {}))
 
     def Place(self, T_tip, shaft_offset=None):
-        """T_tip: SE3 of the cue frame (origin at tip, +Z pointing at the ball).
-
-        shaft_offset: optional extra move of the SHAFT only, in the cue frame
-        (used when screwing the shaft onto the handle). None = fully assembled.
-        """
         shaft_T = T_tip if shaft_offset is None else T_tip * shaft_offset
         self.shaft.T = (shaft_T * self._shaft_off).A
         self.handle.T = (T_tip * self._handle_off).A

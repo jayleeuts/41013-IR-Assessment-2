@@ -1,81 +1,65 @@
-"""
-Pool_Scene.py - where everything sits, measured from your parts.
+# ------------------------------------POOL SCENE--------------------------------------------------------------
+# Measurements of the track, table, pockets and cue holder (taken from the CAD models), and how a turtlebot
+# drives round the track. Kept in one file so every other file uses the same numbers.
 
-World frame: origin on the floor at the centre of the track (and table).
-
-  Robot_Track_v2 : 4.0 x 2.5 m, wooden rims 0.85 m tall, BLUE driving deck at
-                z = 0.75 between the outer and inner rims. Its centre hole is not
-                at its own origin, so the track is shifted by TRACK_POSE to put
-                the hole (2.45 x 1.25 m) around the table at the world origin.
-                Lane centre lines: x = +/-1.6125 (short ends), y = +/-0.9375 (long sides).
-  Pool_Table  : origin on the table top; legs reach 0.749 m down, so the table
-                is placed at z = 0.749. Felt (playing surface) is then at z = 0.83.
-  Turtlebot   : origin at its bottom centre; the Doosan sits on top at 0.141 m.
-  Doosan      : base frame is 22 mm above the bottom of its base mesh.
-  Cue_Holder  : bolts onto the flange; the cue rests in its groove.
-"""
 import numpy as np
-from math import pi
 from spatialmath import SE3
 
 
-# ------------------------------------TRACK / TABLE-----------------------------------------------------
+# ------------------------------------TRACK AND TABLE---------------------------------------------------------
+# Heights and sizes: the turtlebots run in a rectangular channel round the table (outer loop) or just inside
+# it (inner loop).
 
-TRACK_NAME = "Robot_Track_v2"         # Pool_Parts mesh
-TRACK_POSE = SE3(0.005, -0.12, 0.0)   # centres the track's hole on the table
+TRACK_NAME = "Robot_Track_v2"
+TRACK_POSE = SE3(0.005, -0.12, 0.0)
 
-CHANNEL_Z = 0.75                      # blue driving deck
-CHANNEL_X = 1.6125                    # lane centre line, short ends
-CHANNEL_Y = 0.9375                    # lane centre line, long sides
-INNER_X, INNER_Y = 1.44, 0.84         # loop hugging the inner rim (turtlebot edge 2.5 cm from it)
+CHANNEL_Z = 0.75
+CHANNEL_X = 1.6125
+CHANNEL_Y = 0.9375
+INNER_X, INNER_Y = 1.44, 0.84
 
 RIM_TOP_Z = 0.85
-# rims as boxes (xmin, xmax, ymin, ymax, zmin, zmax), in world coordinates
-INNER_RIM = [(-1.275, -1.225, -0.675, 0.675, 0, RIM_TOP_Z), (1.225, 1.275, -0.675, 0.675, 0, RIM_TOP_Z),
-             (-1.275, 1.275, -0.675, -0.625, 0, RIM_TOP_Z), (-1.275, 1.275, 0.625, 0.675, 0, RIM_TOP_Z)]
-OUTER_RIM = [(-2.0, -1.95, -1.25, 1.25, 0, RIM_TOP_Z), (1.95, 2.0, -1.25, 1.25, 0, RIM_TOP_Z),
-             (-2.0, 2.0, -1.25, -1.2, 0, RIM_TOP_Z), (-2.0, 2.0, 1.2, 1.25, 0, RIM_TOP_Z)]
 
-TABLE_Z = 0.749                       # table origin height (legs on the floor)
-FELT_Z = TABLE_Z + 0.0807             # playing surface
-PLAY_AREA = (-1.065, 1.070, -0.440, 0.445)   # cushion noses (xmin, xmax, ymin, ymax)
+TABLE_Z = 0.749
+FELT_Z = TABLE_Z + 0.0807
+PLAY_AREA = (-1.065, 1.070, -0.440, 0.445)
 
-TURTLE_HEIGHT = 0.141                 # top of the turtlebot (where a robot base sits)
-DOOSAN_FOOT = 0.022                   # Doosan base frame above its mesh underside
-
-# ------------------------------------CUE HOLDER-----------------------------------------------------
-
-GROOVE_BOTTOM = 0.025                 # flange face -> bottom of the holder groove
-HANDLE_RADIUS_AT_GRIP = 0.0112        # handle radius where it sits in the groove (0.55 m from the butt)
-GROOVE_HEIGHT = GROOVE_BOTTOM + HANDLE_RADIUS_AT_GRIP   # flange face -> cue centre line
+TURTLE_HEIGHT = 0.141
+DOOSAN_FOOT = 0.022
 
 
-# ------------------------------------POSES-----------------------------------------------------
+# ------------------------------------CUE HOLDER--------------------------------------------------------------
+# Where the cue sits in the holder's groove, used to work out the cue tip from the robot's flange.
+
+GROOVE_BOTTOM = 0.025
+HANDLE_RADIUS_AT_GRIP = 0.0112
+GROOVE_HEIGHT = GROOVE_BOTTOM + HANDLE_RADIUS_AT_GRIP
+
+
+# ------------------------------------POSES-------------------------------------------------------------------
+# A turtlebot's pose on the track, and the pose of the robot mounted on top of it.
 
 def Turtle_Pose(x, y, yaw_deg):
-    """Turtlebot pose on the channel floor."""
     return SE3(x, y, CHANNEL_Z) * SE3.Rz(np.radians(yaw_deg))
 
 
 def Robot_Base_On(turtle_pose):
-    """Doosan base frame when sitting on top of the turtlebot."""
     return turtle_pose * SE3.Tz(TURTLE_HEIGHT + DOOSAN_FOOT)
 
 
-# ------------------------------------DRIVING AROUND THE TRACK-----------------------------------------------------
+# ------------------------------------DRIVING AROUND THE TRACK------------------------------------------------
+# The track is treated as a rectangle: any point is turned into a distance along it and back. Drive_Path
+# goes the short way round, stops to turn at each corner, and can reverse instead of turning round when
+# allowed.
 
 def _Loop(half_x, half_y):
-    """Corners (anticlockwise), side lengths and total length of a rectangular loop."""
     corners = [np.array(c) for c in [(half_x, -half_y), (half_x, half_y),
                                      (-half_x, half_y), (-half_x, -half_y)]]
     seg = [np.linalg.norm(corners[(i + 1) % 4] - corners[i]) for i in range(4)]
     return corners, seg, sum(seg)
 
 
-
-
 def _Loop_S(xy, L):
-    """Distance along loop L (anticlockwise from its first corner) of a point on it."""
     corners, seg, _ = L
     xy = np.asarray(xy, dtype=float)
     best, s0 = None, 0.0
@@ -101,7 +85,7 @@ def _Loop_Point(s, L):
 
 
 def _Turn(yaw_from, yaw_to, dt, turn_speed):
-    diff = (yaw_to - yaw_from + 180) % 360 - 180          # shortest way round
+    diff = (yaw_to - yaw_from + 180) % 360 - 180
     n = max(1, int(abs(diff) / (turn_speed * dt)))
     return [yaw_from + diff * k / n for k in range(1, n + 1)]
 
@@ -112,26 +96,13 @@ def _Angle_Diff(a, b):
 
 def Drive_Path(start, goal, dt, speed=0.35, turn_speed=90.0, loop=(CHANNEL_X, CHANNEL_Y),
                allow_reverse=False):
-    """Turtlebot poses (x, y, yaw_deg) from start to goal around a rectangular loop.
-
-    start, goal : (x, y, yaw_deg), both on the loop.
-                  goal yaw may be None = keep facing the way it arrived.
-    loop        : (half_x, half_y) of the loop - lane centre lines by default,
-                  (INNER_X, INNER_Y) for a robot that has to reach into the table.
-    allow_reverse : drive backwards instead of turning round. Turning on the spot
-                  is then only needed at corners, where there is room - on the
-                  inner loop a turn in the middle of a lane would clip the rim.
-    The turtlebot turns to face where it is going, drives straight, turns on
-    the spot at each corner, then turns to the goal's yaw at the end.
-    """
     L = _Loop(*loop)
     total, seg = L[2], L[1]
     s0, s1 = _Loop_S(start[:2], L), _Loop_S(goal[:2], L)
     forward = (s1 - s0) % total
-    sign = 1 if forward <= total / 2 else -1                 # shorter way round
+    sign = 1 if forward <= total / 2 else -1
     dist = forward if sign == 1 else total - forward
 
-    # break the route at the corners it passes
     stops = [0.0]
     corner_s = np.cumsum([0] + seg[:-1])
     for c in corner_s:
@@ -146,7 +117,7 @@ def Drive_Path(start, goal, dt, speed=0.35, turn_speed=90.0, loop=(CHANNEL_X, CH
         p_a, p_b = _Loop_Point(s0 + sign * a, L), _Loop_Point(s0 + sign * b, L)
         heading = np.degrees(np.arctan2(p_b[1] - p_a[1], p_b[0] - p_a[0]))
         if allow_reverse:
-            options = [heading, heading + 180]                   # forwards or backwards
+            options = [heading, heading + 180]
             last = k == len(pairs) - 1
             if last and goal[2] is not None and min(_Angle_Diff(o, goal[2]) for o in options) < 1:
                 heading = min(options, key=lambda o: _Angle_Diff(o, goal[2]))
@@ -166,10 +137,10 @@ def Drive_Path(start, goal, dt, speed=0.35, turn_speed=90.0, loop=(CHANNEL_X, CH
     return poses
 
 
-# ------------------------------------POCKETS-----------------------------------------------------
+# ------------------------------------POCKETS-----------------------------------------------------------------
+# Pocket centres measured from the table model, the capture radius and how deep a potted ball drops.
 
-# hole centres measured from Pool_Table.dae (table is centred on the origin)
-POCKETS = [(1.104, 0.501), (1.104, -0.499), (-1.096, 0.501), (-1.096, -0.499),   # corners
-           (0.004, 0.501), (0.004, -0.499)]                                     # middles
-POCKET_RADIUS = 0.055                 # hole radius
-POCKET_FLOOR_Z = TABLE_Z - 0.079      # bottom of the holes (a potted ball rests on this)
+POCKETS = [(1.104, 0.501), (1.104, -0.499), (-1.096, 0.501), (-1.096, -0.499),
+           (0.004, 0.501), (0.004, -0.499)]
+POCKET_RADIUS = 0.055
+POCKET_FLOOR_Z = TABLE_Z - 0.079

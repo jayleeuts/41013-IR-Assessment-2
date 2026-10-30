@@ -1,30 +1,23 @@
-"""
-Pool_Arm.py - how the shooting arms move their cue, the same way for every shot.
+# ------------------------------------POOL ARM----------------------------------------------------------------
+# How the shooting arms move their cue, the same way for every shot: one arm shape per robot, RMRC for every
+# straight cue move, a capsule collision check between the cue and the robot's own links, and RRT-Connect
+# for moves no simple path can make.
 
-  * ONE ARM SHAPE per robot (ARM_SHAPE). The base turns to face the shot, the other five
-    joints start from the same elbow-up shape and the cue is always held at the same roll
-    (CUE_ROLL). Inverse kinematics is solved from that one seed only, and the answer must
-    stay in that shape - if it can't, the robot parks somewhere else on the track instead
-    of trying other arm shapes.
-  * RMRC (resolved-rate motion control) for every straight cue move - lining up and the
-    stroke itself: each frame the joint speeds come from the cue-tip Jacobian,
-        q_dot = J^+ (v_wanted + K * pose_error)        (damped least squares)
-    so the tip follows the straight line at the speed asked for, without solving IK again.
-  * COLLISION CHECK with real thickness: every link is a capsule (a tube with round ends,
-    LINK_RADII), the cue is a 15 mm-radius tube. The cue must stay at least CLEARANCE clear
-    of the robot's own links (the flange the holder bolts to is left out - the cue rests on it).
-"""
 import numpy as np
 from spatialmath import SE3
 from spatialmath.base import trlog
 
-CUE_RADIUS = 0.015
-CLEARANCE = 0.01                                    # 1 cm of air between the cue and any link surface
 
-# link capsules: radius of each segment between neighbouring joint frames (flange segment left out)
-LINK_RADII = {"D": [0.10, 0.075, 0.075, 0.06, 0.055],                     # Doosan M0609
-              "U": [0.0, 0.06, 0.05, 0.045, 0.045, 0.04, 0.035],          # UR3 (URDF frames, first 9)
-              "M": [0.08, 0.067, 0.06, 0.053]}                           # Meca500 scaled x2 (wrist + gripper left out)
+# ------------------------------------CUE AGAINST THE ROBOT'S OWN ARM-----------------------------------------
+# Each link is a capsule of its real thickness and the cue is a 15 mm tube; the cue must stay CLEARANCE away
+# from the links (the flange the holder bolts to is left out, because the cue rests on it).
+
+CUE_RADIUS = 0.015
+CLEARANCE = 0.01
+
+LINK_RADII = {"D": [0.10, 0.075, 0.075, 0.06, 0.055],
+              "U": [0.0, 0.06, 0.05, 0.045, 0.045, 0.04, 0.035],
+              "M": [0.08, 0.067, 0.06, 0.053]}
 
 
 def Link_Points(kind, robot, q):
@@ -33,7 +26,6 @@ def Link_Points(kind, robot, q):
 
 
 def Seg_Dist(p1, q1, p2, q2):
-    """Shortest distance between line segments p1-q1 and p2-q2."""
     d1, d2, r = q1 - p1, q2 - p2, p1 - p2
     a, e, f = d1 @ d1, d2 @ d2, d2 @ r
     c, b = d1 @ r, d1 @ d2
@@ -48,7 +40,6 @@ def Seg_Dist(p1, q1, p2, q2):
 
 
 def Cue_Gap(kind, robot, q, T_tip, cue_length):
-    """Air gap (m) between the cue's surface and the nearest of the robot's own link surfaces."""
     if kind not in LINK_RADII:
         return 1.0
     P = Link_Points(kind, robot, q)
@@ -61,10 +52,12 @@ def Cue_Gap(kind, robot, q, T_tip, cue_length):
     return gap
 
 
-# ------------------------------------RMRC-----------------------------------------------------
+# ------------------------------------RMRC--------------------------------------------------------------------
+# Resolved-rate motion control: each control step the joint speeds come from the cue-tip Jacobian, q_dot =
+# J+ (v + K e), so the tip follows the straight line at the speed asked for while small errors are pulled
+# back onto it.
 
 def Pose_Error(T_now, T_goal):
-    """6-vector (position, rotation) from T_now to T_goal, in the world frame."""
     dp = T_goal.t - T_now.t
     dR = T_goal.R @ T_now.R.T
     w = trlog(dR, twist=True) if not np.allclose(dR, np.eye(3)) else np.zeros(3)
@@ -72,7 +65,6 @@ def Pose_Error(T_now, T_goal):
 
 
 def Tip_Jacobian(tip, q, h=1e-6):
-    """6x6 Jacobian of the cue-tip pose (world frame) by small joint nudges."""
     T0 = tip(q)
     J = np.zeros((6, len(q)))
     for j in range(len(q)):
@@ -83,9 +75,6 @@ def Tip_Jacobian(tip, q, h=1e-6):
 
 
 def RMRC(tip, q0, poses, dt, gain=0.6, damping=0.002, substeps=4):
-    """Joint angles that move the cue tip through `poses` (one per frame) by resolved-rate
-    control (each frame is split into a few control steps). Returns (joint list, worst tip
-    error in m)."""
     q = np.array(q0, dtype=float)
     qs, worst = [], 0.0
     h = dt / substeps
@@ -93,8 +82,8 @@ def RMRC(tip, q0, poses, dt, gain=0.6, damping=0.002, substeps=4):
         for j in range(substeps):
             T_a = poses[k - 1].interp(poses[k], j / substeps)
             T_b = poses[k - 1].interp(poses[k], (j + 1) / substeps)
-            v = Pose_Error(T_a, T_b) / h                               # feed-forward: the line's own speed
-            e = Pose_Error(tip(q), T_a)                                 # feedback: pull back onto the line
+            v = Pose_Error(T_a, T_b) / h
+            e = Pose_Error(tip(q), T_a)
             J = Tip_Jacobian(tip, q)
             q_dot = J.T @ np.linalg.solve(J @ J.T + damping * np.eye(6), v + gain * e / h)
             q = q + q_dot * h
@@ -103,10 +92,10 @@ def RMRC(tip, q0, poses, dt, gain=0.6, damping=0.002, substeps=4):
     return qs, worst
 
 
-# ------------------------------------THE ONE ARM SHAPE-----------------------------------------------------
-# joints 2..6 of the elbow-up shape each robot always uses, and the cue roll it always holds.
-# joint 1 (base) is turned to face the shot.  (Chosen by Make_Arm_Plan.py: the shape that keeps
-# the cue clear of the arm for every shot of the game.)
+# ------------------------------------THE ONE ARM SHAPE-------------------------------------------------------
+# Each robot always uses the same elbow-up shape and cue roll, chosen offline by trying shapes on every shot,
+# so the cue clears the arm for every shot. The base turns to face the shot; an IK answer is only accepted if
+# it keeps that shape.
 
 ARM_SHAPE = {"D": [-1.6254, 0.6921, 1.7176, -0.5068, 2.2366, 1.38],
              "U": [-0.8396, -1.6232, 2.3283, -2.1943, -1.6842, -2.5158]}
@@ -114,7 +103,6 @@ CUE_ROLL = {"D": -90.0, "U": 0.0}
 
 
 def Facing(robot, T_world):
-    """Base angle that points the robot at a world position."""
     p = robot.base.inv() * T_world.t
     return float(np.arctan2(p[1], p[0]))
 
@@ -125,21 +113,16 @@ def Shape_Seed(kind, robot, T_world):
 
 
 def Same_Shape(q, seed):
-    """Is q the same arm configuration as the seed? The three things that make an arm
-    'configuration' (the IK branch): shoulder facing the same way (joint 1 within 90 deg),
-    elbow up/down (sign of sin q3) and wrist flip (sign of sin q5)."""
     q, seed = np.asarray(q), np.asarray(seed)
     d1 = (q[0] - seed[0] + np.pi) % (2 * np.pi) - np.pi
     return bool(abs(d1) < np.pi / 2 and np.sign(np.sin(q[2])) == np.sign(np.sin(seed[2]))
                 and np.sign(np.sin(q[4])) == np.sign(np.sin(seed[4])))
 
 
-# ------------------------------------PATH PLANNING (RRT-Connect)-----------------------------------------------------
-# For moves between two collision-free arm poses where no simple joint move stays clear
-# (e.g. carrying the cue upright -> lining up a shot behind the robot): grow two random
-# trees of collision-free joint configurations, one from each end, until they meet, then
-# shortcut the path. The random numbers are seeded from the start/goal, so the same move
-# always gives the same path (the time-skip snapshots stay exact).
+# ------------------------------------PATH PLANNING (RRT-CONNECT)---------------------------------------------
+# Grows two trees of collision-free joint configurations, one from each end, until they meet, then shortcuts
+# the path. The random numbers are seeded from the start and goal, so the same move always gives the same
+# path and the time-skip snapshots stay exact.
 
 def Edge_Free(a, b, free, res=0.05):
     n = max(1, int(np.ceil(np.max(np.abs(b - a)) / res)))
@@ -147,8 +130,6 @@ def Edge_Free(a, b, free, res=0.05):
 
 
 def RRT_Connect(q0, q1, free, step=0.2, iters=3000, span=1.0):
-    """Joint-space path q0 -> q1 (list of waypoints) through configurations where free(q) is
-    True, or None if none was found."""
     q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
     rng = np.random.default_rng(int(abs(np.sum(q0 * 1000 + q1 * 7)) * 1000) % (2 ** 32))
     lo, hi = np.minimum(q0, q1) - span, np.maximum(q0, q1) + span
@@ -184,7 +165,7 @@ def RRT_Connect(q0, q1, free, step=0.2, iters=3000, span=1.0):
         if i_new is None:
             continue
         target = a[0][i_new]
-        while True:                                              # connect the other tree to it
+        while True:
             j = Extend(b, target)
             if j is None:
                 break

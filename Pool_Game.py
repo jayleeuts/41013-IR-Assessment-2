@@ -1,7 +1,8 @@
-"""Pool_Game.py - the planned game (Doosan + Meca500 vs UR3), found offline with the same ball
-physics the menu runs. Each entry: who shoots (D = Doosan, U = UR3, M = Meca500), the shot
-(aim, cue tilt, cue speed, where the tip hits), the turtlebot spot and arm pose that were
-checked for reach and joint speed, and the table layout the shot starts from."""
+# ------------------------------------THE PLANNED GAME--------------------------------------------------------
+# Every shot of the exhibition game (Doosan and Meca500 against the UR3), found offline with the same ball
+# physics: who shoots, where its turtlebot parks, the cue's aim, tilt, spin and speed, the arm pose to start
+# from, and where every ball is before the shot. Nothing is steered: the balls move by physics alone.
+
 GAME = [
     dict(who='D', kind='break', aim=-10.302215058577898, elev=8.0, speed=3.5, side=0.0, height=0.3, pots=[5],
          turtle=(-1.7200, 0.8025, 90.0), roll=-90.0, q_ready=[-3.13286, 0.85347, 1.64633, 0.23385, 2.19941, 1.84959],
